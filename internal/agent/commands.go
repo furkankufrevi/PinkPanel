@@ -888,20 +888,27 @@ func cmdDNSWriteZone(params json.RawMessage) (interface{}, error) {
 	}
 
 	zonePath := fmt.Sprintf("/etc/bind/zones/db.%s", p.Domain)
+
+	// Validate zone content before writing to final path by using a temp file
+	if checkBin, err := exec.LookPath("named-checkzone"); err == nil {
+		tmpPath := zonePath + ".tmp"
+		if err := writeFileSync(tmpPath, []byte(p.Content), 0644); err != nil {
+			return nil, fmt.Errorf("writing temp zone file: %w", err)
+		}
+		out, err := exec.Command(checkBin, p.Domain, tmpPath).CombinedOutput()
+		os.Remove(tmpPath)
+		if err != nil {
+			return nil, fmt.Errorf("zone file validation failed for %s: %s", p.Domain, strings.TrimSpace(string(out)))
+		}
+	}
+
+	// Write final zone file
 	if err := writeFileSync(zonePath, []byte(p.Content), 0644); err != nil {
 		return nil, fmt.Errorf("writing zone file: %w", err)
 	}
 
 	// Set ownership so bind user can read it
 	exec.Command("chown", "bind:bind", zonePath).CombinedOutput()
-
-	// Validate zone file with named-checkzone if available
-	if _, err := exec.LookPath("named-checkzone"); err == nil {
-		out, err := exec.Command("named-checkzone", p.Domain, zonePath).CombinedOutput()
-		if err != nil {
-			return nil, fmt.Errorf("zone file validation failed for %s: %s", p.Domain, strings.TrimSpace(string(out)))
-		}
-	}
 
 	return map[string]string{"status": "ok", "path": zonePath}, nil
 }
@@ -956,25 +963,19 @@ func cmdDNSRemoveZone(params json.RawMessage) (interface{}, error) {
 		return nil, fmt.Errorf("reading named.conf.local: %w", err)
 	}
 
-	// Remove the zone block for this domain
-	content := string(data)
-	zoneStart := fmt.Sprintf("zone \"%s\" {", p.Domain)
-	startIdx := strings.Index(content, zoneStart)
-	if startIdx != -1 {
-		endIdx := strings.Index(content[startIdx:], "};")
-		if endIdx != -1 {
-			endIdx += startIdx + 3 // include };\n
-			if startIdx > 0 && content[startIdx-1] == '\n' {
-				startIdx--
-			}
-			content = content[:startIdx] + content[endIdx:]
-			if err := writeFileSync(namedConfLocal, []byte(content), 0644); err != nil {
-				return nil, fmt.Errorf("writing named.conf.local: %w", err)
-			}
+	// Remove the zone block using regex for robust matching.
+	// Matches: optional leading newlines, zone "domain" { ... };
+	escaped := regexp.QuoteMeta(p.Domain)
+	zoneRe := regexp.MustCompile(`(?s)\n*zone\s+"` + escaped + `"\s*\{[^}]*\};\s*`)
+	cleaned := zoneRe.ReplaceAllString(string(data), "\n")
+
+	if cleaned != string(data) {
+		if err := writeFileSync(namedConfLocal, []byte(cleaned), 0644); err != nil {
+			return nil, fmt.Errorf("writing named.conf.local: %w", err)
 		}
 	}
 
-	// Remove zone file
+	// Remove zone file only after config was successfully updated
 	zonePath := fmt.Sprintf("/etc/bind/zones/db.%s", p.Domain)
 	os.Remove(zonePath)
 
@@ -986,13 +987,23 @@ func cmdDNSReload(_ json.RawMessage) (interface{}, error) {
 		return unsupportedOS()
 	}
 
+	// Validate BIND configuration before attempting reload
+	if checkBin, err := exec.LookPath("named-checkconf"); err == nil {
+		if out, err := exec.Command(checkBin).CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("BIND config validation failed: %s", strings.TrimSpace(string(out)))
+		}
+	}
+
 	// Try rndc first (fastest, no downtime)
 	if out, err := exec.Command("rndc", "reconfig").CombinedOutput(); err == nil {
 		// reconfig succeeded — also reload zone data
-		exec.Command("rndc", "reload").CombinedOutput()
+		if out2, err := exec.Command("rndc", "reload").CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("rndc reload failed: %s", strings.TrimSpace(string(out2)))
+		}
 		return map[string]string{"status": "ok", "method": "rndc"}, nil
 	} else {
-		_ = out // rndc failed, fall through to restart
+		// Log rndc failure details before falling back
+		fmt.Fprintf(os.Stderr, "rndc reconfig failed (%v): %s, falling back to restart\n", err, strings.TrimSpace(string(out)))
 	}
 
 	// Fallback: full restart

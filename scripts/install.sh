@@ -299,9 +299,43 @@ configure_services() {
     systemctl enable nginx > /dev/null 2>&1
     log "NGINX enabled"
 
-    # Enable BIND9
+    # Configure and enable BIND9
+    mkdir -p /etc/bind/zones
+    chown bind:bind /etc/bind/zones 2>/dev/null || true
+
+    # Write authoritative-only BIND options
+    cat > /etc/bind/named.conf.options <<'BINDOPTS'
+options {
+    directory "/var/cache/bind";
+    listen-on { any; };
+    listen-on-v6 { any; };
+    allow-query { any; };
+    recursion no;
+    allow-recursion { none; };
+    dnssec-validation auto;
+    version "not disclosed";
+};
+BINDOPTS
+
+    # Ensure named.conf.local exists
+    if [[ ! -f /etc/bind/named.conf.local ]]; then
+        echo "// PinkPanel managed zones" > /etc/bind/named.conf.local
+    fi
+
+    # Ensure named.conf includes named.conf.local
+    if [[ -f /etc/bind/named.conf ]] && ! grep -q "named.conf.local" /etc/bind/named.conf; then
+        echo 'include "/etc/bind/named.conf.local";' >> /etc/bind/named.conf
+    fi
+
+    # Generate rndc key if missing
+    if [[ ! -f /etc/bind/rndc.key ]]; then
+        rndc-confgen -a -b 256 > /dev/null 2>&1 || true
+        chown bind:bind /etc/bind/rndc.key 2>/dev/null || true
+    fi
+
     systemctl enable named > /dev/null 2>&1 || systemctl enable bind9 > /dev/null 2>&1 || true
-    log "BIND9 enabled"
+    systemctl restart named > /dev/null 2>&1 || systemctl restart bind9 > /dev/null 2>&1 || true
+    log "BIND9 configured and enabled"
 
     # Enable vsftpd
     systemctl enable vsftpd > /dev/null 2>&1

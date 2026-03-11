@@ -417,8 +417,12 @@ func (h *DomainHandler) toggleSeparateDNS(d *domain.Domain, separateDNS bool) {
 	} else {
 		// Turning OFF: remove subdomain zone, add A back to parent
 		_ = h.DNSSvc.DeleteByDomain(d.ID)
-		h.AgentClient.Call("dns_remove_zone", map[string]interface{}{"domain": d.Name})
-		h.AgentClient.Call("dns_reload", nil)
+		if _, err := h.AgentClient.Call("dns_remove_zone", map[string]interface{}{"domain": d.Name}); err != nil {
+			log.Printf("WARNING: failed to remove DNS zone for %s: %v", d.Name, err)
+		}
+		if _, err := h.AgentClient.Call("dns_reload", nil); err != nil {
+			log.Printf("ERROR: dns reload failed after removing zone for %s: %v", d.Name, err)
+		}
 
 		if _, err := h.DNSSvc.Create(parent.ID, "A", subPrefix, serverIP, 3600, nil); err != nil {
 			log.Printf("WARNING: failed to re-add DNS A record for %s: %v", d.Name, err)
