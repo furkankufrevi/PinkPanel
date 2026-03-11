@@ -17,6 +17,7 @@ BOLD='\033[1m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 RED='\033[0;31m'
+PINK='\033[1;35m'
 NC='\033[0m'
 
 log()  { echo -e "${GREEN}[PinkPanel]${NC} $*"; }
@@ -369,10 +370,8 @@ cleanup() {
 print_done() {
     local ip=$(hostname -I | awk '{print $1}')
 
-    echo ""
-    echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
-    echo -e "${BOLD}  ${GREEN}PinkPanel deployed successfully!${NC}"
-    echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
+    print_banner
+    echo -e "  ${BOLD}${GREEN}Deployed successfully!${NC}"
     echo ""
     echo -e "  Open in browser:"
     echo -e "  ${BOLD}http://${ip}:${PINKPANEL_PORT}${NC}"
@@ -389,15 +388,24 @@ print_done() {
     echo -e "  Logs:    ${PINKPANEL_LOG}/"
     echo -e "  MySQL:   /etc/pinkpanel/mysql.cnf"
     echo ""
-    echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
 }
 
 # ── Main ──────────────────────────────────────
 
-main() {
+print_banner() {
     echo ""
-    echo -e "${BOLD}${GREEN}PinkPanel Deployer${NC}"
-    echo -e "Repository: ${REPO}"
+    echo -e "${PINK}    ____  _       __   ____                  __${NC}"
+    echo -e "${PINK}   / __ \\(_)___  / /__/ __ \\____ _____  ___  / /${NC}"
+    echo -e "${PINK}  / /_/ / / __ \\/ //_/ /_/ / __ \`/ __ \\/ _ \\/ / ${NC}"
+    echo -e "${PINK} / ____/ / / / / ,< / ____/ /_/ / / / /  __/ /  ${NC}"
+    echo -e "${PINK}/_/   /_/_/ /_/_/|_/_/    \\__,_/_/ /_/\\___/_/   ${NC}"
+    echo ""
+}
+
+main() {
+    print_banner
+    echo -e "  ${BOLD}${GREEN}Deployer${NC}"
+    echo -e "  Repository: ${REPO}"
     echo ""
 
     check_root

@@ -14,6 +14,7 @@ BOLD='\033[1m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 RED='\033[0;31m'
+PINK='\033[1;35m'
 NC='\033[0m'
 
 log()  { echo -e "${GREEN}[PinkPanel]${NC} $*"; }
@@ -21,10 +22,20 @@ warn() { echo -e "${YELLOW}[PinkPanel]${NC} $*"; }
 err()  { echo -e "${RED}[PinkPanel]${NC} $*" >&2; }
 die()  { err "$@"; exit 1; }
 
+print_banner() {
+    echo ""
+    echo -e "${PINK}    ____  _       __   ____                  __${NC}"
+    echo -e "${PINK}   / __ \\(_)___  / /__/ __ \\____ _____  ___  / /${NC}"
+    echo -e "${PINK}  / /_/ / / __ \\/ //_/ /_/ / __ \`/ __ \\/ _ \\/ / ${NC}"
+    echo -e "${PINK} / ____/ / / / / ,< / ____/ /_/ / / / /  __/ /  ${NC}"
+    echo -e "${PINK}/_/   /_/_/ /_/_/|_/_/    \\__,_/_/ /_/\\___/_/   ${NC}"
+    echo ""
+}
+
 [[ $EUID -eq 0 ]] || die "Run as root: sudo bash uninstall.sh"
 
-echo ""
-echo -e "${BOLD}${RED}PinkPanel Uninstaller${NC}"
+print_banner
+echo -e "  ${BOLD}${RED}Uninstaller${NC}"
 echo ""
 echo -e "This will remove PinkPanel from your server."
 echo -e "By default it will ${BOLD}NOT${NC} remove:"
@@ -174,10 +185,8 @@ fi
 
 # ── Done ────────────────────────────────────
 
-echo ""
-echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
-echo -e "${BOLD}  ${GREEN}PinkPanel has been uninstalled.${NC}"
-echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
+print_banner
+echo -e "  ${BOLD}${GREEN}Uninstalled successfully.${NC}"
 echo ""
 echo -e "  System packages (nginx, mariadb, php, bind9, vsftpd)"
 echo -e "  were ${BOLD}not${NC} removed. To remove them manually:"
@@ -185,4 +194,3 @@ echo ""
 echo -e "    apt remove --purge nginx mariadb-server php8.3-fpm \\"
 echo -e "      bind9 vsftpd certbot ufw"
 echo ""
-echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"

@@ -13,6 +13,7 @@ BOLD='\033[1m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 RED='\033[0;31m'
+PINK='\033[1;35m'
 NC='\033[0m'
 
 log()  { echo -e "${GREEN}[PinkPanel]${NC} $*"; }
@@ -20,10 +21,20 @@ warn() { echo -e "${YELLOW}[PinkPanel]${NC} $*"; }
 err()  { echo -e "${RED}[PinkPanel]${NC} $*" >&2; }
 die()  { err "$@"; exit 1; }
 
+print_banner() {
+    echo ""
+    echo -e "${PINK}    ____  _       __   ____                  __${NC}"
+    echo -e "${PINK}   / __ \\(_)___  / /__/ __ \\____ _____  ___  / /${NC}"
+    echo -e "${PINK}  / /_/ / / __ \\/ //_/ /_/ / __ \`/ __ \\/ _ \\/ / ${NC}"
+    echo -e "${PINK} / ____/ / / / / ,< / ____/ /_/ / / / /  __/ /  ${NC}"
+    echo -e "${PINK}/_/   /_/_/ /_/_/|_/_/    \\__,_/_/ /_/\\___/_/   ${NC}"
+    echo ""
+}
+
 [[ $EUID -eq 0 ]] || die "Run as root: sudo bash upgrade.sh"
 
-echo ""
-echo -e "${BOLD}${GREEN}PinkPanel Upgrader${NC}"
+print_banner
+echo -e "  ${BOLD}${GREEN}Upgrader${NC}"
 echo ""
 
 # Get current version
@@ -139,11 +150,8 @@ if [[ -x "$PINKPANEL_HOME/bin/pinkpanel" ]]; then
     NEW=$("$PINKPANEL_HOME/bin/pinkpanel" version 2>/dev/null || echo "unknown")
 fi
 
-echo ""
-echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
-echo -e "${BOLD}  ${GREEN}PinkPanel upgraded successfully!${NC}"
-echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
+print_banner
+echo -e "  ${BOLD}${GREEN}Upgraded successfully!${NC}"
 echo ""
 echo -e "  $CURRENT → $NEW"
 echo ""
-echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
