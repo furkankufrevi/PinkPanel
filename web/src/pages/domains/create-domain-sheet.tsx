@@ -40,8 +40,13 @@ export function CreateDomainSheet({ open, onOpenChange }: CreateDomainSheetProps
   const mutation = useMutation({
     mutationFn: () =>
       createDomain({ name, php_version: phpVersion, create_www: createWww }),
-    onSuccess: () => {
+    onSuccess: (result) => {
       toast.success(`Domain ${name} created`);
+      if (result.warnings?.length) {
+        for (const warning of result.warnings) {
+          toast.warning(warning, { duration: 10000 });
+        }
+      }
       queryClient.invalidateQueries({ queryKey: ["domains"] });
       onOpenChange(false);
       resetForm();

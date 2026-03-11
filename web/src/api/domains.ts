@@ -21,11 +21,20 @@ export async function getDomain(id: number): Promise<Domain> {
   return data;
 }
 
+export interface CreateDomainResult {
+  domain: Domain;
+  warnings: string[];
+}
+
 export async function createDomain(
   req: CreateDomainRequest
-): Promise<Domain> {
+): Promise<CreateDomainResult> {
   const { data } = await api.post("/domains", req);
-  return data;
+  // Response is either { data: Domain, warnings: [...] } or just Domain
+  if (data.data) {
+    return { domain: data.data, warnings: data.warnings ?? [] };
+  }
+  return { domain: data, warnings: [] };
 }
 
 export async function updateDomain(

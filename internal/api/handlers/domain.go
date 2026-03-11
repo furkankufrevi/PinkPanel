@@ -284,6 +284,15 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 	}
 	_ = db.LogActivity(h.DB, adminID, action, "domain", d.ID, d.Name, c.IP())
 
+	// Run system health checks and collect warnings for the response
+	warnings := h.checkSystemHealth()
+
+	if len(warnings) > 0 {
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+			"data":     d,
+			"warnings": warnings,
+		})
+	}
 	return c.Status(fiber.StatusCreated).JSON(d)
 }
 
@@ -762,6 +771,51 @@ func getServerIP() string {
 	}
 	log.Printf("WARNING: no non-loopback IPv4 found, using 127.0.0.1 for DNS records")
 	return "127.0.0.1"
+}
+
+// checkSystemHealth verifies that critical services are working after domain
+// provisioning and returns any warnings for the user.
+func (h *DomainHandler) checkSystemHealth() []string {
+	var warnings []string
+
+	// Check NGINX
+	if _, err := h.AgentClient.Call("service_status", map[string]interface{}{"service": "nginx"}); err != nil {
+		warnings = append(warnings, "NGINX is not responding")
+	}
+
+	// Check BIND/DNS
+	dnsOk := false
+	if resp, err := h.AgentClient.Call("service_status", map[string]interface{}{"service": "named"}); err == nil {
+		if m, ok := resp.Result.(map[string]interface{}); ok {
+			if active, ok := m["active"].(bool); ok && active {
+				dnsOk = true
+			}
+		}
+	}
+	if !dnsOk {
+		if resp, err := h.AgentClient.Call("service_status", map[string]interface{}{"service": "bind9"}); err == nil {
+			if m, ok := resp.Result.(map[string]interface{}); ok {
+				if active, ok := m["active"].(bool); ok && active {
+					dnsOk = true
+				}
+			}
+		}
+	}
+	if !dnsOk {
+		warnings = append(warnings, "DNS server (BIND9) is not running — DNS records will not resolve")
+	}
+
+	// Check PHP-FPM
+	if _, err := h.AgentClient.Call("service_status", map[string]interface{}{"service": "php8.3-fpm"}); err != nil {
+		warnings = append(warnings, "PHP-FPM is not responding")
+	}
+
+	// Check MariaDB
+	if _, err := h.AgentClient.Call("service_status", map[string]interface{}{"service": "mariadb"}); err != nil {
+		warnings = append(warnings, "MariaDB is not responding")
+	}
+
+	return warnings
 }
 
 // provisionDNSZone generates a BIND zone file from DNS records and registers

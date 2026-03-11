@@ -48,8 +48,13 @@ export function CreateSubdomainSheet({ open, onOpenChange, parentDomains }: Crea
         create_www: false,
         parent_id: Number(parentId),
       }),
-    onSuccess: () => {
+    onSuccess: (result) => {
       toast.success(`Subdomain ${name}.${selectedParent?.name} created`);
+      if (result.warnings?.length) {
+        for (const warning of result.warnings) {
+          toast.warning(warning, { duration: 10000 });
+        }
+      }
       queryClient.invalidateQueries({ queryKey: ["domains"] });
       onOpenChange(false);
       resetForm();
