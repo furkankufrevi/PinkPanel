@@ -37,14 +37,15 @@ export function Sidebar() {
       )}
     >
       <div className="flex h-14 items-center border-b border-border px-4">
-        {!collapsed && (
-          <Link to="/" className="flex items-center gap-2">
+        <Link to="/" className="flex items-center gap-2">
+          <img src="/logo.png" alt="PinkPanel" className="h-7 w-7 rounded" />
+          {!collapsed && (
             <span className="text-lg font-bold">
               <span className="text-pink-500">Pink</span>
               <span className="text-foreground">Panel</span>
             </span>
-          </Link>
-        )}
+          )}
+        </Link>
         <Button
           variant="ghost"
           size="icon"

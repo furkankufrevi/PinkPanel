@@ -71,6 +71,9 @@ function LoginForm() {
     <div className="flex min-h-screen items-center justify-center p-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
+          <div className="flex justify-center mb-2">
+            <img src="/logo.png" alt="PinkPanel" className="h-12 w-12 rounded-lg" />
+          </div>
           <CardTitle className="text-2xl">
             <span className="text-pink-500">Pink</span>Panel
           </CardTitle>
@@ -153,6 +156,9 @@ function SetupForm() {
     <div className="flex min-h-screen items-center justify-center p-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
+          <div className="flex justify-center mb-2">
+            <img src="/logo.png" alt="PinkPanel" className="h-12 w-12 rounded-lg" />
+          </div>
           <CardTitle className="text-2xl">
             <span className="text-pink-500">Pink</span>Panel Setup
           </CardTitle>

@@ -155,6 +155,17 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 		log.Printf("WARNING: failed to create document root for %s: %v", d.Name, err)
 	}
 
+	// Create default welcome page
+	indexPath := fmt.Sprintf("%s/index.html", d.DocumentRoot)
+	indexContent := tmpl.DefaultIndexPage(d.Name)
+	if _, err := h.AgentClient.Call("file_write", map[string]interface{}{
+		"path":    indexPath,
+		"content": indexContent,
+		"mode":    "0644",
+	}); err != nil {
+		log.Printf("WARNING: failed to create default index page for %s: %v", d.Name, err)
+	}
+
 	// Create default DNS records (do this before NGINX so it always happens)
 	serverIP := getServerIP()
 	if err := h.DNSSvc.CreateDefaultRecords(d.ID, d.Name, serverIP); err != nil {
