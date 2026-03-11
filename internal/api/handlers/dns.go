@@ -251,6 +251,68 @@ func (h *DNSHandler) DeleteRecord(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": "DNS record deleted successfully"})
 }
 
+// ResetDefaults deletes all DNS records for a domain and recreates the default set.
+func (h *DNSHandler) ResetDefaults(c *fiber.Ctx) error {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "INVALID_REQUEST",
+				"message": "Invalid domain ID",
+			},
+		})
+	}
+
+	d, err := h.DomainSvc.GetByID(domainID)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "NOT_FOUND",
+				"message": "Domain not found",
+			},
+		})
+	}
+
+	// Delete all existing records
+	if err := h.DNSSvc.DeleteByDomain(domainID); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "INTERNAL_ERROR",
+				"message": "Failed to delete existing DNS records",
+			},
+		})
+	}
+
+	// Create default records
+	serverIP := getServerIP()
+	if err := h.DNSSvc.CreateDefaultRecords(domainID, d.Name, serverIP); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "INTERNAL_ERROR",
+				"message": fmt.Sprintf("Failed to create default DNS records: %v", err),
+			},
+		})
+	}
+
+	// Regenerate zone file
+	regenerateZone(h, domainID, d.Name)
+
+	// Log activity
+	adminID, _ := c.Locals("admin_id").(int64)
+	_ = db.LogActivity(h.DB, adminID, "dns_reset", "domain", domainID, d.Name, c.IP())
+
+	// Return new records
+	records, err := h.DNSSvc.ListByDomain(domainID)
+	if err != nil {
+		records = []dns.Record{}
+	}
+
+	return c.JSON(fiber.Map{
+		"data":    records,
+		"message": "DNS records reset to defaults",
+	})
+}
+
 // regenerateZone rebuilds the BIND9 zone file for a domain and pushes it
 // to the server via the agent. All errors are logged but non-fatal.
 func regenerateZone(h *DNSHandler, domainID int64, domainName string) {

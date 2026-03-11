@@ -2,12 +2,12 @@ import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { type ColumnDef } from "@tanstack/react-table";
-import { Plus, Pencil, Trash2, Globe } from "lucide-react";
+import { Plus, Pencil, Trash2, Globe, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/shared/data-table";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { DNSRecordSheet } from "./dns-record-sheet";
-import { listDNSRecords, deleteDNSRecord } from "@/api/dns";
+import { listDNSRecords, deleteDNSRecord, resetDNSDefaults } from "@/api/dns";
 import { toast } from "sonner";
 import type { DNSRecord } from "@/types/dns";
 import type { AxiosError } from "axios";
@@ -33,6 +33,7 @@ export function DomainDNS() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editRecord, setEditRecord] = useState<DNSRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DNSRecord | null>(null);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: ["dns-records", domainId],
@@ -49,6 +50,18 @@ export function DomainDNS() {
     },
     onError: (err: AxiosError<APIError>) => {
       toast.error(err.response?.data?.error?.message ?? "Failed to delete record");
+    },
+  });
+
+  const resetMutation = useMutation({
+    mutationFn: () => resetDNSDefaults(domainId),
+    onSuccess: () => {
+      toast.success("DNS records reset to defaults");
+      setResetConfirmOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["dns-records", domainId] });
+    },
+    onError: (err: AxiosError<APIError>) => {
+      toast.error(err.response?.data?.error?.message ?? "Failed to reset DNS records");
     },
   });
 
@@ -137,16 +150,25 @@ export function DomainDNS() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">DNS Records</h2>
-        <Button
-          onClick={() => {
-            setEditRecord(null);
-            setSheetOpen(true);
-          }}
-          className="bg-pink-500 hover:bg-pink-600"
-        >
-          <Plus className="mr-2 h-4 w-4" />
-          Add Record
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => setResetConfirmOpen(true)}
+          >
+            <RotateCcw className="mr-2 h-4 w-4" />
+            Reset to Default
+          </Button>
+          <Button
+            onClick={() => {
+              setEditRecord(null);
+              setSheetOpen(true);
+            }}
+            className="bg-pink-500 hover:bg-pink-600"
+          >
+            <Plus className="mr-2 h-4 w-4" />
+            Add Record
+          </Button>
+        </div>
       </div>
 
       <DataTable
@@ -189,6 +211,17 @@ export function DomainDNS() {
         destructive
         loading={deleteMutation.isPending}
         onConfirm={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
+      />
+
+      <ConfirmDialog
+        open={resetConfirmOpen}
+        onOpenChange={setResetConfirmOpen}
+        title="Reset DNS Records"
+        description="This will delete all existing DNS records and recreate the default set (A, NS, SOA, MX). This cannot be undone."
+        confirmText="Reset to Default"
+        destructive
+        loading={resetMutation.isPending}
+        onConfirm={() => resetMutation.mutate()}
       />
     </div>
   );

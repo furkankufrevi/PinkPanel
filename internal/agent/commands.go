@@ -66,6 +66,8 @@ func (r *CommandRegistry) registerBuiltins() {
 
 	// DNS
 	r.commands["dns_write_zone"] = cmdDNSWriteZone
+	r.commands["dns_add_zone"] = cmdDNSAddZone
+	r.commands["dns_remove_zone"] = cmdDNSRemoveZone
 	r.commands["dns_reload"] = cmdDNSReload
 
 	// PHP
@@ -827,6 +829,82 @@ func cmdDNSWriteZone(params json.RawMessage) (interface{}, error) {
 		return nil, fmt.Errorf("writing zone file: %w", err)
 	}
 	return map[string]string{"status": "ok", "path": zonePath}, nil
+}
+
+func cmdDNSAddZone(params json.RawMessage) (interface{}, error) {
+	var p zoneWriteParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if !safeNameRe.MatchString(p.Domain) {
+		return nil, fmt.Errorf("invalid domain name: %s", p.Domain)
+	}
+
+	namedConfLocal := "/etc/bind/named.conf.local"
+	existing, _ := os.ReadFile(namedConfLocal)
+
+	// Check if zone already exists
+	zoneMarker := fmt.Sprintf("zone \"%s\"", p.Domain)
+	if strings.Contains(string(existing), zoneMarker) {
+		return map[string]string{"status": "ok", "detail": "zone already registered"}, nil
+	}
+
+	// Append zone block
+	zoneBlock := fmt.Sprintf("\nzone \"%s\" {\n    type master;\n    file \"/etc/bind/zones/db.%s\";\n    allow-transfer { none; };\n};\n", p.Domain, p.Domain)
+
+	f, err := os.OpenFile(namedConfLocal, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("opening named.conf.local: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(zoneBlock); err != nil {
+		return nil, fmt.Errorf("writing zone block: %w", err)
+	}
+
+	return map[string]string{"status": "ok"}, nil
+}
+
+func cmdDNSRemoveZone(params json.RawMessage) (interface{}, error) {
+	var p zoneWriteParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if !safeNameRe.MatchString(p.Domain) {
+		return nil, fmt.Errorf("invalid domain name: %s", p.Domain)
+	}
+
+	// Remove zone block from named.conf.local
+	namedConfLocal := "/etc/bind/named.conf.local"
+	data, err := os.ReadFile(namedConfLocal)
+	if err != nil {
+		return nil, fmt.Errorf("reading named.conf.local: %w", err)
+	}
+
+	// Remove the zone block for this domain
+	content := string(data)
+	zoneStart := fmt.Sprintf("zone \"%s\"", p.Domain)
+	startIdx := strings.Index(content, zoneStart)
+	if startIdx != -1 {
+		// Find the closing }; after the zone block
+		endIdx := strings.Index(content[startIdx:], "};")
+		if endIdx != -1 {
+			endIdx += startIdx + 3 // include };\n
+			// Trim leading newline if present
+			if startIdx > 0 && content[startIdx-1] == '\n' {
+				startIdx--
+			}
+			content = content[:startIdx] + content[endIdx:]
+			if err := os.WriteFile(namedConfLocal, []byte(content), 0644); err != nil {
+				return nil, fmt.Errorf("writing named.conf.local: %w", err)
+			}
+		}
+	}
+
+	// Remove zone file
+	zonePath := fmt.Sprintf("/etc/bind/zones/db.%s", p.Domain)
+	os.Remove(zonePath)
+
+	return map[string]string{"status": "ok"}, nil
 }
 
 func cmdDNSReload(_ json.RawMessage) (interface{}, error) {

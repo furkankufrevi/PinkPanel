@@ -165,6 +165,15 @@ func (s *Service) Delete(id int64) error {
 	return nil
 }
 
+// DeleteByDomain removes all DNS records for a given domain.
+func (s *Service) DeleteByDomain(domainID int64) error {
+	_, err := s.DB.Exec("DELETE FROM dns_records WHERE domain_id = ?", domainID)
+	if err != nil {
+		return fmt.Errorf("deleting dns records for domain: %w", err)
+	}
+	return nil
+}
+
 // CreateDefaultRecords inserts the standard set of DNS records for a newly
 // created domain.
 func (s *Service) CreateDefaultRecords(domainID int64, domainName, serverIP string) error {

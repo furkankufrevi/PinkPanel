@@ -127,14 +127,15 @@ func main() {
 
 	// Domain service & handler
 	domainSvc := &domain.Service{DB: database}
+	dnsSvc := &dns.Service{DB: database}
 	domainHandler := &handlers.DomainHandler{
 		DB:          database,
 		DomainSvc:   domainSvc,
+		DNSSvc:      dnsSvc,
 		AgentClient: agentClient,
 	}
 
-	// DNS service & handler
-	dnsSvc := &dns.Service{DB: database}
+	// DNS handler
 	dnsHandler := &handlers.DNSHandler{
 		DB:          database,
 		DNSSvc:      dnsSvc,
@@ -250,6 +251,7 @@ func main() {
 	// DNS routes
 	protected.Get("/domains/:id/dns", dnsHandler.ListRecords)
 	protected.Post("/domains/:id/dns", dnsHandler.CreateRecord)
+	protected.Post("/domains/:id/dns/reset", dnsHandler.ResetDefaults)
 	protected.Put("/dns/:id", dnsHandler.UpdateRecord)
 	protected.Delete("/dns/:id", dnsHandler.DeleteRecord)
 

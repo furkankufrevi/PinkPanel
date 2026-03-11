@@ -4,11 +4,13 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net"
 	"strconv"
 
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/pinkpanel/pinkpanel/internal/agent"
+	"github.com/pinkpanel/pinkpanel/internal/core/dns"
 	"github.com/pinkpanel/pinkpanel/internal/core/domain"
 	"github.com/pinkpanel/pinkpanel/internal/db"
 	tmpl "github.com/pinkpanel/pinkpanel/internal/template"
@@ -18,6 +20,7 @@ import (
 type DomainHandler struct {
 	DB          *sql.DB
 	DomainSvc   *domain.Service
+	DNSSvc      *dns.Service
 	AgentClient *agent.Client
 }
 
@@ -196,6 +199,15 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 	_, err = h.AgentClient.Call("nginx_reload", nil)
 	if err != nil {
 		log.Printf("ERROR: nginx reload failed after creating %s: %v", d.Name, err)
+	}
+
+	// Create default DNS records
+	serverIP := getServerIP()
+	if err := h.DNSSvc.CreateDefaultRecords(d.ID, d.Name, serverIP); err != nil {
+		log.Printf("WARNING: failed to create default DNS records for %s: %v", d.Name, err)
+	} else {
+		// Generate zone file and register in BIND
+		provisionDNSZone(h.DNSSvc, h.AgentClient, d.ID, d.Name)
 	}
 
 	// Log activity (non-critical)
@@ -523,6 +535,18 @@ func (h *DomainHandler) Delete(c *fiber.Ctx) error {
 		log.Printf("ERROR: nginx reload failed after deleting %s: %v", d.Name, err)
 	}
 
+	// Remove DNS records and zone
+	if err := h.DNSSvc.DeleteByDomain(id); err != nil {
+		log.Printf("WARNING: failed to delete DNS records for %s: %v", d.Name, err)
+	}
+	_, err = h.AgentClient.Call("dns_remove_zone", map[string]interface{}{
+		"domain": d.Name,
+	})
+	if err != nil {
+		log.Printf("WARNING: failed to remove DNS zone for %s: %v", d.Name, err)
+	}
+	_, _ = h.AgentClient.Call("dns_reload", nil)
+
 	// Optionally remove document root
 	removeFiles := c.Query("remove_files") == "true"
 	if removeFiles {
@@ -540,4 +564,77 @@ func (h *DomainHandler) Delete(c *fiber.Ctx) error {
 	_ = db.LogActivity(h.DB, adminID, "domain_delete", "domain", d.ID, d.Name, c.IP())
 
 	return c.JSON(fiber.Map{"message": "Domain deleted successfully"})
+}
+
+// getServerIP returns the server's primary IP address.
+func getServerIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "127.0.0.1"
+	}
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
+			return ipNet.IP.String()
+		}
+	}
+	return "127.0.0.1"
+}
+
+// provisionDNSZone generates a BIND zone file from DNS records and registers
+// it in named.conf.local. All errors are logged but non-fatal.
+func provisionDNSZone(dnsSvc *dns.Service, agentClient *agent.Client, domainID int64, domainName string) {
+	records, err := dnsSvc.ListByDomain(domainID)
+	if err != nil {
+		log.Printf("WARNING: failed to list DNS records for zone provisioning of %s: %v", domainName, err)
+		return
+	}
+
+	zoneRecords := make([]tmpl.ZoneRecord, 0, len(records))
+	for _, r := range records {
+		zr := tmpl.ZoneRecord{
+			Name:  r.Name,
+			TTL:   r.TTL,
+			Class: "IN",
+			Type:  r.Type,
+			Value: r.Value,
+		}
+		if r.Priority != nil {
+			zr.Priority = *r.Priority
+		}
+		zoneRecords = append(zoneRecords, zr)
+	}
+
+	zoneContent, err := tmpl.RenderZoneFile(tmpl.ZoneFileData{
+		Domain:  domainName,
+		Records: zoneRecords,
+	})
+	if err != nil {
+		log.Printf("WARNING: failed to render zone file for %s: %v", domainName, err)
+		return
+	}
+
+	// Write zone file
+	_, err = agentClient.Call("dns_write_zone", map[string]interface{}{
+		"domain":  domainName,
+		"content": zoneContent,
+	})
+	if err != nil {
+		log.Printf("WARNING: failed to write zone file for %s: %v", domainName, err)
+		return
+	}
+
+	// Register zone in BIND config
+	_, err = agentClient.Call("dns_add_zone", map[string]interface{}{
+		"domain": domainName,
+	})
+	if err != nil {
+		log.Printf("WARNING: failed to add zone to BIND for %s: %v", domainName, err)
+		return
+	}
+
+	// Reload DNS
+	_, err = agentClient.Call("dns_reload", nil)
+	if err != nil {
+		log.Printf("ERROR: dns reload failed after provisioning zone for %s: %v", domainName, err)
+	}
 }

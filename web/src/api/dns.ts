@@ -29,3 +29,8 @@ export async function updateDNSRecord(
 export async function deleteDNSRecord(recordId: number): Promise<void> {
   await api.delete(`/dns/${recordId}`);
 }
+
+export async function resetDNSDefaults(domainId: number): Promise<{ data: DNSRecord[]; message: string }> {
+  const { data } = await api.post(`/domains/${domainId}/dns/reset`);
+  return data;
+}
