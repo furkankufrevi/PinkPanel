@@ -959,10 +959,21 @@ func cmdDNSReload(_ json.RawMessage) (interface{}, error) {
 	if runtime.GOOS != "linux" {
 		return unsupportedOS()
 	}
-	out, err := exec.Command("rndc", "reload").CombinedOutput()
+	// reconfig picks up new zone definitions from named.conf.local
+	out, err := exec.Command("rndc", "reconfig").CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("rndc reload: %s", strings.TrimSpace(string(out)))
+		// Fallback: full restart if rndc fails (e.g. rndc key not set up)
+		out2, err2 := exec.Command("systemctl", "restart", "named").CombinedOutput()
+		if err2 != nil {
+			out2, err2 = exec.Command("systemctl", "restart", "bind9").CombinedOutput()
+			if err2 != nil {
+				return nil, fmt.Errorf("dns reload failed: rndc: %s, systemctl: %s",
+					strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
+			}
+		}
 	}
+	// reload refreshes zone data for already-known zones
+	exec.Command("rndc", "reload").CombinedOutput()
 	return map[string]string{"status": "ok"}, nil
 }
 

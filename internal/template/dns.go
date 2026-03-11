@@ -30,23 +30,21 @@ func RenderZoneFile(data ZoneFileData) (string, error) {
 
 	buf.WriteString(fmt.Sprintf("$TTL 3600\n$ORIGIN %s.\n\n", data.Domain))
 
-	// 1. Find and render SOA first — if none exists, generate a default
-	hasSoa := false
+	// 1. SOA — find mname/rname from records, or use defaults
+	mname := fmt.Sprintf("ns1.%s. admin.%s.", data.Domain, data.Domain)
 	for _, r := range data.Records {
 		if r.Type == "SOA" {
-			buf.WriteString(fmt.Sprintf("@\tIN\tSOA\t%s (\n", r.Value))
-			hasSoa = true
+			mname = r.Value
 			break
 		}
 	}
-	if !hasSoa {
-		buf.WriteString(fmt.Sprintf("@\tIN\tSOA\tns1.%s. admin.%s. (\n", data.Domain, data.Domain))
-		buf.WriteString(fmt.Sprintf("\t\t\t\t%s\t; serial\n", serial))
-		buf.WriteString("\t\t\t\t3600\t\t; refresh\n")
-		buf.WriteString("\t\t\t\t900\t\t; retry\n")
-		buf.WriteString("\t\t\t\t1209600\t\t; expire\n")
-		buf.WriteString("\t\t\t\t86400 )\t\t; minimum\n\n")
-	}
+
+	buf.WriteString(fmt.Sprintf("@\tIN\tSOA\t%s (\n", mname))
+	buf.WriteString(fmt.Sprintf("\t\t\t\t%s\t; serial\n", serial))
+	buf.WriteString("\t\t\t\t3600\t\t; refresh\n")
+	buf.WriteString("\t\t\t\t900\t\t; retry\n")
+	buf.WriteString("\t\t\t\t1209600\t\t; expire\n")
+	buf.WriteString("\t\t\t\t86400 )\t\t; minimum\n\n")
 
 	// 2. NS records
 	for _, r := range data.Records {
@@ -84,29 +82,4 @@ func renderRecord(r ZoneRecord) string {
 		return fmt.Sprintf("%s\t%d\tIN\t%s\t%s",
 			r.Name, r.TTL, r.Type, r.Value)
 	}
-}
-
-// RenderNamedConf renders the BIND9 named.conf.options for PinkPanel.
-func RenderNamedConf() string {
-	return `options {
-    directory "/var/cache/bind";
-
-    // Listen on all interfaces
-    listen-on { any; };
-    listen-on-v6 { any; };
-
-    // Allow queries from anywhere
-    allow-query { any; };
-
-    // Disable recursion (authoritative only)
-    recursion no;
-    allow-recursion { none; };
-
-    // DNSSEC
-    dnssec-validation auto;
-
-    // Hide version
-    version "not disclosed";
-};
-`
 }
