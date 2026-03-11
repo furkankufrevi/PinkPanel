@@ -14,3 +14,9 @@ export interface FileListResponse {
   path: string;
   base: string;
 }
+
+export interface SearchResult {
+  path: string;
+  line: number;
+  snippet: string;
+}

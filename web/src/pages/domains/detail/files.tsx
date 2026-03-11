@@ -1,17 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -24,101 +15,98 @@ import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { toast } from "sonner";
 import {
   listFiles,
-  readFile,
   saveFile,
   deleteFile,
   renameFile,
   createDirectory,
+  uploadFiles,
+  downloadFile,
+  compressFiles,
+  extractArchive,
 } from "@/api/files";
+import { useFileManager } from "@/stores/file-manager";
+import {
+  FileTree,
+  EditorTabs,
+  CodeEditor,
+  FileToolbar,
+  UploadZone,
+  ContextMenu,
+  QuickOpen,
+  CompressDialog,
+  WelcomePanel,
+  ImagePreview,
+} from "./file-manager";
 import type { FileEntry } from "@/types/files";
 import type { AxiosError } from "axios";
 import type { APIError } from "@/types/api";
-import {
-  Folder,
-  File,
-  FileText,
-  FileCode,
-  Image,
-  Archive,
-  ChevronRight,
-  ArrowUp,
-  Plus,
-  FolderPlus,
-  Pencil,
-  Trash2,
-  Save,
-  X,
-} from "lucide-react";
-
-function formatSize(bytes: number): string {
-  if (bytes === 0) return "—";
-  const units = ["B", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
-}
-
-function getFileIcon(entry: FileEntry) {
-  if (entry.is_dir) return <Folder className="h-4 w-4 text-blue-500" />;
-  const ext = entry.name.split(".").pop()?.toLowerCase() ?? "";
-  if (["jpg", "jpeg", "png", "gif", "svg", "webp", "ico"].includes(ext))
-    return <Image className="h-4 w-4 text-purple-500" />;
-  if (["zip", "tar", "gz", "tgz", "bz2", "rar", "7z"].includes(ext))
-    return <Archive className="h-4 w-4 text-amber-500" />;
-  if (["php", "js", "ts", "jsx", "tsx", "py", "rb", "go", "rs", "css", "scss", "json", "xml", "yaml", "yml", "toml", "sh", "bash"].includes(ext))
-    return <FileCode className="h-4 w-4 text-green-500" />;
-  if (["txt", "md", "log", "conf", "cfg", "ini", "env", "htaccess"].includes(ext))
-    return <FileText className="h-4 w-4 text-muted-foreground" />;
-  return <File className="h-4 w-4 text-muted-foreground" />;
-}
+import { Loader2 } from "lucide-react";
 
 export function DomainFiles() {
   const { id } = useParams<{ id: string }>();
   const domainId = Number(id);
   const queryClient = useQueryClient();
 
-  const [currentPath, setCurrentPath] = useState<string | undefined>(undefined);
-  const [editingFile, setEditingFile] = useState<string | null>(null);
-  const [editContent, setEditContent] = useState("");
+  const store = useFileManager();
+  const {
+    openTabs,
+    activeTabPath,
+    sidebarWidth,
+    sidebarVisible,
+    updateContent,
+    markSaved,
+    closeTab,
+    setActiveTab,
+    setSidebarWidth,
+  } = store;
+
+  // Local dialog state
   const [showNewFile, setShowNewFile] = useState(false);
   const [showNewDir, setShowNewDir] = useState(false);
   const [showRename, setShowRename] = useState<FileEntry | null>(null);
   const [showDelete, setShowDelete] = useState<FileEntry | null>(null);
+  const [showQuickOpen, setShowQuickOpen] = useState(false);
+  const [showCompress, setShowCompress] = useState<FileEntry | null>(null);
   const [newName, setNewName] = useState("");
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    entry: FileEntry;
+  } | null>(null);
+  const [contextDir, setContextDir] = useState<string | null>(null);
 
-  const { data, isLoading } = useQuery({
-    queryKey: ["files", domainId, currentPath],
-    queryFn: () => listFiles(domainId, currentPath),
+  // Resize state
+  const [isResizing, setIsResizing] = useState(false);
+  const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  // Get base path from initial query
+  const { data: rootData } = useQuery({
+    queryKey: ["files", domainId, undefined],
+    queryFn: () => listFiles(domainId, undefined),
     enabled: !!domainId,
   });
+  const basePath = rootData?.base;
 
-  const readMutation = useMutation({
-    mutationFn: (path: string) => readFile(domainId, path),
-    onSuccess: (result, path) => {
-      setEditingFile(path);
-      setEditContent(result.content);
-    },
-    onError: (err: AxiosError<APIError>) => {
-      toast.error(err.response?.data?.error?.message ?? "Failed to read file");
-    },
-  });
+  // Active tab
+  const activeTab = openTabs.find((t) => t.path === activeTabPath);
 
+  // Save mutation
   const saveMutation = useMutation({
-    mutationFn: () => saveFile(domainId, editingFile!, editContent),
-    onSuccess: () => {
+    mutationFn: ({ path, content }: { path: string; content: string }) =>
+      saveFile(domainId, path, content),
+    onSuccess: (_, { path }) => {
+      markSaved(path);
       toast.success("File saved");
-      setEditingFile(null);
       queryClient.invalidateQueries({ queryKey: ["files", domainId] });
     },
     onError: (err: AxiosError<APIError>) => {
-      toast.error(err.response?.data?.error?.message ?? "Failed to save file");
+      toast.error(err.response?.data?.error?.message ?? "Failed to save");
     },
   });
 
+  // Create file mutation
   const createFileMutation = useMutation({
-    mutationFn: () => {
-      const path = `${data?.path ?? ""}/${newName}`;
-      return saveFile(domainId, path, "");
-    },
+    mutationFn: (fullPath: string) => saveFile(domainId, fullPath, ""),
     onSuccess: () => {
       toast.success("File created");
       setShowNewFile(false);
@@ -130,11 +118,9 @@ export function DomainFiles() {
     },
   });
 
+  // Create directory mutation
   const createDirMutation = useMutation({
-    mutationFn: () => {
-      const path = `${data?.path ?? ""}/${newName}`;
-      return createDirectory(domainId, path);
-    },
+    mutationFn: (fullPath: string) => createDirectory(domainId, fullPath),
     onSuccess: () => {
       toast.success("Directory created");
       setShowNewDir(false);
@@ -146,12 +132,10 @@ export function DomainFiles() {
     },
   });
 
+  // Rename mutation
   const renameMutation = useMutation({
-    mutationFn: () => {
-      const dir = showRename!.path.substring(0, showRename!.path.lastIndexOf("/"));
-      const newPath = `${dir}/${newName}`;
-      return renameFile(domainId, showRename!.path, newPath);
-    },
+    mutationFn: ({ oldPath, newPath }: { oldPath: string; newPath: string }) =>
+      renameFile(domainId, oldPath, newPath),
     onSuccess: () => {
       toast.success("Renamed successfully");
       setShowRename(null);
@@ -163,8 +147,10 @@ export function DomainFiles() {
     },
   });
 
+  // Delete mutation
   const deleteMutation = useMutation({
-    mutationFn: () => deleteFile(domainId, showDelete!.path, showDelete!.is_dir),
+    mutationFn: ({ path, recursive }: { path: string; recursive: boolean }) =>
+      deleteFile(domainId, path, recursive),
     onSuccess: () => {
       toast.success("Deleted successfully");
       setShowDelete(null);
@@ -175,197 +161,323 @@ export function DomainFiles() {
     },
   });
 
-  function navigateTo(path: string) {
-    setCurrentPath(path);
-    setEditingFile(null);
-  }
+  // Compress mutation
+  const compressMutation = useMutation({
+    mutationFn: ({
+      sources,
+      output,
+      format,
+    }: {
+      sources: string[];
+      output: string;
+      format: string;
+    }) => compressFiles(domainId, sources, output, format),
+    onSuccess: () => {
+      toast.success("Archive created");
+      setShowCompress(null);
+      queryClient.invalidateQueries({ queryKey: ["files", domainId] });
+    },
+    onError: (err: AxiosError<APIError>) => {
+      toast.error(err.response?.data?.error?.message ?? "Failed to compress");
+    },
+  });
 
-  function navigateUp() {
-    if (!data?.path || data.path === data.base) return;
-    const parent = data.path.substring(0, data.path.lastIndexOf("/"));
-    if (parent.length >= (data.base?.length ?? 0)) {
-      setCurrentPath(parent);
-      setEditingFile(null);
-    }
-  }
+  // Extract mutation
+  const extractMutation = useMutation({
+    mutationFn: ({ archive, dest }: { archive: string; dest: string }) =>
+      extractArchive(domainId, archive, dest),
+    onSuccess: () => {
+      toast.success("Extracted successfully");
+      queryClient.invalidateQueries({ queryKey: ["files", domainId] });
+    },
+    onError: (err: AxiosError<APIError>) => {
+      toast.error(err.response?.data?.error?.message ?? "Failed to extract");
+    },
+  });
 
-  function handleEntryClick(entry: FileEntry) {
-    if (entry.is_dir) {
-      navigateTo(entry.path);
-    } else {
-      readMutation.mutate(entry.path);
-    }
-  }
+  // Save active file
+  const handleSave = useCallback(() => {
+    if (!activeTab || activeTab.content === activeTab.originalContent) return;
+    saveMutation.mutate({ path: activeTab.path, content: activeTab.content });
+  }, [activeTab, saveMutation]);
 
-  // Breadcrumb
-  const breadcrumbs = (() => {
-    if (!data?.path || !data?.base) return [];
-    const relative = data.path.substring(data.base.length);
-    if (!relative) return [{ name: "/", path: data.base }];
-    const parts = relative.split("/").filter(Boolean);
-    const crumbs = [{ name: "/", path: data.base }];
-    let acc = data.base;
-    for (const part of parts) {
-      acc += "/" + part;
-      crumbs.push({ name: part, path: acc });
+  // Upload handler
+  const handleUpload = useCallback(
+    async (files: File[]) => {
+      const destDir = contextDir ?? basePath;
+      if (!destDir) return;
+      store.setUploading(true, 0);
+      try {
+        await uploadFiles(domainId, destDir, files, (progress) => {
+          store.setUploading(true, progress);
+        });
+        toast.success(`Uploaded ${files.length} file(s)`);
+        queryClient.invalidateQueries({ queryKey: ["files", domainId] });
+      } catch (err) {
+        const axErr = err as AxiosError<APIError>;
+        toast.error(axErr.response?.data?.error?.message ?? "Upload failed");
+      } finally {
+        store.setUploading(false, 0);
+      }
+    },
+    [domainId, basePath, contextDir, queryClient, store]
+  );
+
+  // Upload button click (via hidden input)
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const handleUploadClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  // Context menu handler
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent, entry: FileEntry) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setContextMenu({ x: e.clientX, y: e.clientY, entry });
+    },
+    []
+  );
+
+  // Sidebar resize handlers
+  const handleResizeStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      setIsResizing(true);
+      resizeRef.current = { startX: e.clientX, startWidth: sidebarWidth };
+    },
+    [sidebarWidth]
+  );
+
+  useEffect(() => {
+    if (!isResizing) return;
+    function handleMouseMove(e: MouseEvent) {
+      if (!resizeRef.current) return;
+      const delta = e.clientX - resizeRef.current.startX;
+      setSidebarWidth(resizeRef.current.startWidth + delta);
     }
-    return crumbs;
+    function handleMouseUp() {
+      setIsResizing(false);
+      resizeRef.current = null;
+    }
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isResizing, setSidebarWidth]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey;
+
+      if (mod && e.key === "s") {
+        e.preventDefault();
+        handleSave();
+      } else if (mod && e.key === "p") {
+        e.preventDefault();
+        setShowQuickOpen(true);
+      } else if (mod && e.key === "b") {
+        e.preventDefault();
+        store.toggleSidebar();
+      } else if (mod && e.key === "n") {
+        e.preventDefault();
+        setShowNewFile(true);
+        setNewName("");
+      } else if (mod && e.key === "w") {
+        e.preventDefault();
+        if (activeTabPath) closeTab(activeTabPath);
+      } else if (e.ctrlKey && e.key === "Tab") {
+        e.preventDefault();
+        if (openTabs.length > 1 && activeTabPath) {
+          const idx = openTabs.findIndex((t) => t.path === activeTabPath);
+          const nextIdx = e.shiftKey
+            ? (idx - 1 + openTabs.length) % openTabs.length
+            : (idx + 1) % openTabs.length;
+          setActiveTab(openTabs[nextIdx].path);
+        }
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleSave, activeTabPath, openTabs, closeTab, setActiveTab, store]);
+
+  // Determine what to show in the selected directory for new file/folder
+  const selectedDir = (() => {
+    if (contextDir) return contextDir;
+    if (store.selectedPath) {
+      // Check if selected path is a directory by checking expanded dirs or open tabs
+      const tab = openTabs.find((t) => t.path === store.selectedPath);
+      if (!tab) {
+        // Might be a directory
+        return store.selectedPath;
+      }
+      // It's a file — use its parent
+      return store.selectedPath.substring(0, store.selectedPath.lastIndexOf("/"));
+    }
+    return basePath ?? "";
   })();
 
-  if (isLoading) {
+  // Loading state
+  if (!rootData) {
     return (
-      <div className="space-y-4">
-        <Skeleton className="h-10 w-full" />
-        <Skeleton className="h-64 w-full" />
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
     );
   }
 
-  // File editor view
-  if (editingFile) {
-    const fileName = editingFile.split("/").pop();
-    return (
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <FileCode className="h-5 w-5 text-muted-foreground" />
-            <span className="font-mono text-sm">{fileName}</span>
-            <Badge variant="outline" className="text-xs">
-              {editingFile}
-            </Badge>
-          </div>
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              onClick={() => saveMutation.mutate()}
-              disabled={saveMutation.isPending}
-              className="bg-pink-500 hover:bg-pink-600"
-            >
-              <Save className="h-4 w-4 mr-1" />
-              {saveMutation.isPending ? "Saving..." : "Save"}
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setEditingFile(null)}>
-              <X className="h-4 w-4 mr-1" />
-              Close
-            </Button>
-          </div>
-        </div>
-        <Textarea
-          value={editContent}
-          onChange={(e) => setEditContent(e.target.value)}
-          className="font-mono text-xs min-h-[500px]"
-          rows={30}
-        />
-      </div>
-    );
-  }
-
-  const entries = (data?.data ?? []) as FileEntry[];
-  const dirs = entries.filter((e) => e.is_dir).sort((a, b) => a.name.localeCompare(b.name));
-  const files = entries.filter((e) => !e.is_dir).sort((a, b) => a.name.localeCompare(b.name));
-  const sorted = [...dirs, ...files];
+  const isImage = activeTab?.content === "__image__";
 
   return (
-    <div className="space-y-4">
-      {/* Toolbar */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-1 text-sm">
-          {data?.path !== data?.base && (
-            <Button size="sm" variant="ghost" onClick={navigateUp}>
-              <ArrowUp className="h-4 w-4" />
-            </Button>
-          )}
-          {breadcrumbs.map((crumb, i) => (
-            <span key={crumb.path} className="flex items-center">
-              {i > 0 && <ChevronRight className="h-3 w-3 text-muted-foreground mx-1" />}
-              <button
-                onClick={() => navigateTo(crumb.path)}
-                className="hover:text-pink-500 transition-colors"
-              >
-                {crumb.name}
-              </button>
-            </span>
-          ))}
-        </div>
-        <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => { setShowNewFile(true); setNewName(""); }}>
-            <Plus className="h-4 w-4 mr-1" />
-            New File
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => { setShowNewDir(true); setNewName(""); }}>
-            <FolderPlus className="h-4 w-4 mr-1" />
-            New Folder
-          </Button>
+    <UploadZone onDrop={handleUpload} disabled={store.isUploading}>
+      <div
+        className="flex border rounded-lg overflow-hidden bg-background"
+        style={{ height: "calc(100vh - 220px)", minHeight: "400px" }}
+      >
+        {/* Sidebar */}
+        {sidebarVisible && (
+          <>
+            <div
+              className="flex flex-col border-r bg-muted/20 shrink-0 overflow-hidden"
+              style={{ width: sidebarWidth }}
+            >
+              <FileToolbar
+                onNewFile={() => {
+                  setContextDir(selectedDir);
+                  setShowNewFile(true);
+                  setNewName("");
+                }}
+                onNewFolder={() => {
+                  setContextDir(selectedDir);
+                  setShowNewDir(true);
+                  setNewName("");
+                }}
+                onUpload={handleUploadClick}
+                onSearch={() => setShowQuickOpen(true)}
+              />
+              <div className="flex-1 overflow-y-auto overflow-x-hidden">
+                <FileTree
+                  domainId={domainId}
+                  basePath={basePath}
+                  onContextMenu={handleContextMenu}
+                />
+              </div>
+            </div>
+            {/* Resize handle */}
+            <div
+              className={`w-1 cursor-col-resize hover:bg-pink-500/30 transition-colors shrink-0 ${
+                isResizing ? "bg-pink-500/50" : ""
+              }`}
+              onMouseDown={handleResizeStart}
+            />
+          </>
+        )}
+
+        {/* Editor area */}
+        <div className="flex flex-col flex-1 min-w-0">
+          <EditorTabs />
+          <div className="flex-1 overflow-hidden">
+            {!activeTab && <WelcomePanel />}
+            {activeTab?.isLoading && (
+              <div className="flex items-center justify-center h-full">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              </div>
+            )}
+            {activeTab && !activeTab.isLoading && isImage && (
+              <ImagePreview
+                domainId={domainId}
+                path={activeTab.path}
+                name={activeTab.name}
+              />
+            )}
+            {activeTab && !activeTab.isLoading && !isImage && (
+              <CodeEditor
+                content={activeTab.content}
+                language={activeTab.language}
+                onChange={(content) => updateContent(activeTab.path, content)}
+                onSave={handleSave}
+              />
+            )}
+          </div>
         </div>
       </div>
 
-      {/* File List */}
-      <Card>
-        <CardHeader className="py-3">
-          <CardTitle className="text-sm font-medium text-muted-foreground">
-            {sorted.length} items
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <div className="divide-y">
-            {sorted.length === 0 && (
-              <div className="p-8 text-center text-muted-foreground text-sm">
-                This directory is empty
-              </div>
-            )}
-            {sorted.map((entry) => (
-              <div
-                key={entry.path}
-                className="flex items-center justify-between px-4 py-2 hover:bg-muted/50 group"
-              >
-                <button
-                  className="flex items-center gap-3 flex-1 text-left"
-                  onClick={() => handleEntryClick(entry)}
-                >
-                  {getFileIcon(entry)}
-                  <span className="text-sm">{entry.name}</span>
-                </button>
-                <div className="flex items-center gap-4">
-                  <span className="text-xs text-muted-foreground w-16 text-right">
-                    {entry.is_dir ? "—" : formatSize(entry.size)}
-                  </span>
-                  <span className="text-xs text-muted-foreground font-mono w-20">
-                    {entry.permissions}
-                  </span>
-                  <span className="text-xs text-muted-foreground w-32">
-                    {new Date(entry.mod_time).toLocaleString()}
-                  </span>
-                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="h-7 w-7"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowRename(entry);
-                        setNewName(entry.name);
-                      }}
-                    >
-                      <Pencil className="h-3 w-3" />
-                    </Button>
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="h-7 w-7 text-destructive"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowDelete(entry);
-                      }}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+      {/* Hidden file input for upload button */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files?.length) {
+            handleUpload(Array.from(e.target.files));
+            e.target.value = "";
+          }
+        }}
+      />
+
+      {/* Context menu */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          entry={contextMenu.entry}
+          onClose={() => setContextMenu(null)}
+          onOpen={() => {
+            // Opening is handled by tree click
+          }}
+          onRename={() => {
+            setShowRename(contextMenu.entry);
+            setNewName(contextMenu.entry.name);
+          }}
+          onCopyPath={() => {
+            navigator.clipboard.writeText(contextMenu.entry.path);
+            toast.success("Path copied");
+          }}
+          onDownload={() => {
+            downloadFile(domainId, contextMenu.entry.path).catch(() => {
+              toast.error("Download failed");
+            });
+          }}
+          onDelete={() => {
+            setShowDelete(contextMenu.entry);
+          }}
+          onNewFile={() => {
+            setContextDir(contextMenu.entry.is_dir ? contextMenu.entry.path : contextMenu.entry.path.substring(0, contextMenu.entry.path.lastIndexOf("/")));
+            setShowNewFile(true);
+            setNewName("");
+          }}
+          onNewFolder={() => {
+            setContextDir(contextMenu.entry.is_dir ? contextMenu.entry.path : contextMenu.entry.path.substring(0, contextMenu.entry.path.lastIndexOf("/")));
+            setShowNewDir(true);
+            setNewName("");
+          }}
+          onCompress={() => {
+            setShowCompress(contextMenu.entry);
+          }}
+          onExtract={() => {
+            const dest = contextMenu.entry.path.substring(
+              0,
+              contextMenu.entry.path.lastIndexOf("/")
+            );
+            extractMutation.mutate({
+              archive: contextMenu.entry.path,
+              dest,
+            });
+          }}
+        />
+      )}
+
+      {/* Quick Open */}
+      <QuickOpen
+        open={showQuickOpen}
+        onOpenChange={setShowQuickOpen}
+        domainId={domainId}
+        basePath={basePath}
+      />
 
       {/* New File Dialog */}
       <Dialog open={showNewFile} onOpenChange={setShowNewFile}>
@@ -379,13 +491,18 @@ export function DomainFiles() {
             onChange={(e) => setNewName(e.target.value)}
             placeholder="filename.txt"
             autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && newName) {
+                createFileMutation.mutate(`${selectedDir}/${newName}`);
+              }
+            }}
           />
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowNewFile(false)}>
               Cancel
             </Button>
             <Button
-              onClick={() => createFileMutation.mutate()}
+              onClick={() => createFileMutation.mutate(`${selectedDir}/${newName}`)}
               disabled={!newName || createFileMutation.isPending}
               className="bg-pink-500 hover:bg-pink-600"
             >
@@ -407,13 +524,18 @@ export function DomainFiles() {
             onChange={(e) => setNewName(e.target.value)}
             placeholder="folder-name"
             autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && newName) {
+                createDirMutation.mutate(`${selectedDir}/${newName}`);
+              }
+            }}
           />
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowNewDir(false)}>
               Cancel
             </Button>
             <Button
-              onClick={() => createDirMutation.mutate()}
+              onClick={() => createDirMutation.mutate(`${selectedDir}/${newName}`)}
               disabled={!newName || createDirMutation.isPending}
               className="bg-pink-500 hover:bg-pink-600"
             >
@@ -436,13 +558,22 @@ export function DomainFiles() {
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && newName && newName !== showRename?.name) {
+                const dir = showRename!.path.substring(0, showRename!.path.lastIndexOf("/"));
+                renameMutation.mutate({ oldPath: showRename!.path, newPath: `${dir}/${newName}` });
+              }
+            }}
           />
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowRename(null)}>
               Cancel
             </Button>
             <Button
-              onClick={() => renameMutation.mutate()}
+              onClick={() => {
+                const dir = showRename!.path.substring(0, showRename!.path.lastIndexOf("/"));
+                renameMutation.mutate({ oldPath: showRename!.path, newPath: `${dir}/${newName}` });
+              }}
               disabled={!newName || newName === showRename?.name || renameMutation.isPending}
               className="bg-pink-500 hover:bg-pink-600"
             >
@@ -451,6 +582,27 @@ export function DomainFiles() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Compress Dialog */}
+      {showCompress && (
+        <CompressDialog
+          open={!!showCompress}
+          onOpenChange={() => setShowCompress(null)}
+          sourceName={showCompress.name}
+          loading={compressMutation.isPending}
+          onCompress={(outputName, format) => {
+            const dir = showCompress.path.substring(
+              0,
+              showCompress.path.lastIndexOf("/")
+            );
+            compressMutation.mutate({
+              sources: [showCompress.path],
+              output: `${dir}/${outputName}`,
+              format,
+            });
+          }}
+        />
+      )}
 
       {/* Delete Confirmation */}
       <ConfirmDialog
@@ -461,8 +613,21 @@ export function DomainFiles() {
         confirmText="Delete"
         destructive
         loading={deleteMutation.isPending}
-        onConfirm={() => deleteMutation.mutate()}
+        onConfirm={() =>
+          deleteMutation.mutate({
+            path: showDelete!.path,
+            recursive: showDelete!.is_dir,
+          })
+        }
       />
-    </div>
+
+      {/* Upload progress toast */}
+      {store.isUploading && (
+        <div className="fixed bottom-4 right-4 z-50 bg-popover border rounded-lg shadow-lg p-3 flex items-center gap-3">
+          <Loader2 className="h-4 w-4 animate-spin text-pink-500" />
+          <span className="text-sm">Uploading... {store.uploadProgress}%</span>
+        </div>
+      )}
+    </UploadZone>
   );
 }

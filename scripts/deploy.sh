@@ -90,6 +90,8 @@ install_packages() {
         bind9 bind9utils \
         vsftpd \
         certbot \
+        zip \
+        unzip \
         ufw \
         > /dev/null
 

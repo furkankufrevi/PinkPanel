@@ -98,6 +98,8 @@ install_packages() {
         curl \
         wget \
         tar \
+        zip \
+        unzip \
         ufw \
         > /dev/null
 

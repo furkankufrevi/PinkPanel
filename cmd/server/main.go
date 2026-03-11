@@ -95,6 +95,7 @@ func main() {
 	app := fiber.New(fiber.Config{
 		AppName:               "PinkPanel",
 		DisableStartupMessage: true,
+		BodyLimit:             100 * 1024 * 1024, // 100MB for file uploads
 	})
 
 	// Global middleware
@@ -292,6 +293,10 @@ func main() {
 	protected.Post("/domains/:id/files/mkdir", fileHandler.CreateDirectory)
 	protected.Post("/domains/:id/files/extract", fileHandler.Extract)
 	protected.Post("/domains/:id/files/permissions", fileHandler.SetPermissions)
+	protected.Post("/domains/:id/files/upload", fileHandler.Upload)
+	protected.Get("/domains/:id/files/download", fileHandler.Download)
+	protected.Post("/domains/:id/files/compress", fileHandler.Compress)
+	protected.Get("/domains/:id/files/search", fileHandler.Search)
 
 	// Serve embedded frontend
 	distFS, err := fs.Sub(embeddedFiles, "static")

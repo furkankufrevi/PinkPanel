@@ -56,6 +56,8 @@ func (r *CommandRegistry) registerBuiltins() {
 	r.commands["file_rename"] = cmdFileRename
 	r.commands["file_copy"] = cmdFileCopy
 	r.commands["file_extract"] = cmdFileExtract
+	r.commands["file_compress"] = cmdFileCompress
+	r.commands["file_search"] = cmdFileSearch
 	r.commands["dir_create"] = cmdDirCreate
 	r.commands["set_ownership"] = cmdSetOwnership
 	r.commands["set_permissions"] = cmdSetPermissions
@@ -147,6 +149,24 @@ type fileCopyParams struct {
 type fileExtractParams struct {
 	Archive string `json:"archive"`
 	Dest    string `json:"dest"`
+}
+
+type fileCompressParams struct {
+	Sources []string `json:"sources"`
+	Output  string   `json:"output"`
+	Format  string   `json:"format"`
+}
+
+type fileSearchParams struct {
+	Path       string `json:"path"`
+	Query      string `json:"query"`
+	MaxResults int    `json:"max_results"`
+}
+
+type searchResult struct {
+	Path    string `json:"path"`
+	Line    int    `json:"line"`
+	Snippet string `json:"snippet"`
 }
 
 type dirCreateParams struct {
@@ -709,6 +729,96 @@ func cmdFileExtract(params json.RawMessage) (interface{}, error) {
 	return map[string]string{"status": "ok"}, nil
 }
 
+func cmdFileCompress(params json.RawMessage) (interface{}, error) {
+	var p fileCompressParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if err := validatePath(p.Output); err != nil {
+		return nil, err
+	}
+	for _, src := range p.Sources {
+		if err := validatePath(src); err != nil {
+			return nil, err
+		}
+	}
+
+	var cmd *exec.Cmd
+	switch p.Format {
+	case "zip":
+		args := append([]string{"-r", p.Output}, p.Sources...)
+		cmd = exec.Command("zip", args...)
+	case "tar.gz":
+		args := append([]string{"czf", p.Output}, p.Sources...)
+		cmd = exec.Command("tar", args...)
+	case "tar.bz2":
+		args := append([]string{"cjf", p.Output}, p.Sources...)
+		cmd = exec.Command("tar", args...)
+	default:
+		return nil, fmt.Errorf("unsupported format: %s", p.Format)
+	}
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("compressing: %s", strings.TrimSpace(string(out)))
+	}
+	return map[string]string{"status": "ok"}, nil
+}
+
+func cmdFileSearch(params json.RawMessage) (interface{}, error) {
+	var p fileSearchParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if err := validatePath(p.Path); err != nil {
+		return nil, err
+	}
+	if p.Query == "" {
+		return nil, fmt.Errorf("query is required")
+	}
+	maxResults := p.MaxResults
+	if maxResults <= 0 {
+		maxResults = 100
+	}
+
+	cmd := exec.Command("grep", "-rn", "--include=*", "-m", "1", p.Query, p.Path)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// grep returns exit code 1 when no matches found
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return []searchResult{}, nil
+		}
+		return nil, fmt.Errorf("searching: %s", strings.TrimSpace(string(out)))
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	var results []searchResult
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		if len(results) >= maxResults {
+			break
+		}
+		// Format: file:line:content
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		lineNum, _ := strconv.Atoi(parts[1])
+		snippet := parts[2]
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		results = append(results, searchResult{
+			Path:    parts[0],
+			Line:    lineNum,
+			Snippet: snippet,
+		})
+	}
+	return results, nil
+}
+
 func cmdDirCreate(params json.RawMessage) (interface{}, error) {
 	var p dirCreateParams
 	if err := json.Unmarshal(params, &p); err != nil {
@@ -964,9 +1074,10 @@ func cmdDNSRemoveZone(params json.RawMessage) (interface{}, error) {
 	}
 
 	// Remove the zone block using regex for robust matching.
-	// Matches: optional leading newlines, zone "domain" { ... };
+	// Uses .*? (non-greedy with (?s) dotall) to handle nested braces like
+	// allow-transfer { none; }; inside the zone block.
 	escaped := regexp.QuoteMeta(p.Domain)
-	zoneRe := regexp.MustCompile(`(?s)\n*zone\s+"` + escaped + `"\s*\{[^}]*\};\s*`)
+	zoneRe := regexp.MustCompile(`(?s)\n*zone\s+"` + escaped + `"\s*\{.*?\n\};\s*`)
 	cleaned := zoneRe.ReplaceAllString(string(data), "\n")
 
 	if cleaned != string(data) {

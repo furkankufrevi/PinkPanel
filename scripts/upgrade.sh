@@ -76,6 +76,19 @@ cp "$BUILD_DIR/dist/pinkpanel-agent" "$PINKPANEL_HOME/bin/"
 cp "$BUILD_DIR/dist/pinkpanel-cli"   "$PINKPANEL_HOME/bin/"
 chmod +x "$PINKPANEL_HOME/bin/"*
 
+# ── Ensure required packages ────────────────
+install_missing_packages() {
+    local missing=()
+    command -v zip &>/dev/null || missing+=("zip")
+    command -v unzip &>/dev/null || missing+=("unzip")
+    if (( ${#missing[@]} > 0 )); then
+        log "Installing missing packages: ${missing[*]}..."
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq
+        apt-get install -y -qq "${missing[@]}" > /dev/null
+    fi
+}
+
 # ── Fix BIND9 configuration ─────────────────
 fix_bind() {
     log "Checking BIND9 configuration..."
@@ -109,9 +122,46 @@ BINDOPTS
         echo 'include "/etc/bind/named.conf.local";' >> /etc/bind/named.conf
     fi
 
+    # Repair named.conf.local: remove stray "};" lines left by old zone removal bug
+    if [[ -f /etc/bind/named.conf.local ]]; then
+        local conf="/etc/bind/named.conf.local"
+        # Rebuild config: keep comments and zone blocks, discard orphan "};" lines
+        local tmp_conf
+        tmp_conf=$(mktemp)
+        local in_zone=0
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^zone[[:space:]] ]]; then
+                in_zone=1
+                echo "$line" >> "$tmp_conf"
+            elif (( in_zone )); then
+                echo "$line" >> "$tmp_conf"
+                if [[ "$line" =~ ^\}\; ]]; then
+                    in_zone=0
+                fi
+            elif [[ "$line" =~ ^[[:space:]]*\}\;[[:space:]]*$ ]]; then
+                # Stray orphan "};" — skip it
+                warn "Removed stray '};' from named.conf.local"
+            else
+                echo "$line" >> "$tmp_conf"
+            fi
+        done < "$conf"
+        cp "$tmp_conf" "$conf"
+        rm -f "$tmp_conf"
+        chown bind:bind "$conf" 2>/dev/null || true
+    fi
+
     # Fix zone file ownership
     if [[ -d /etc/bind/zones ]]; then
         chown -R bind:bind /etc/bind/zones 2>/dev/null || true
+    fi
+
+    # Test config before restarting
+    if command -v named-checkconf &>/dev/null; then
+        if named-checkconf > /dev/null 2>&1; then
+            log "BIND config check passed"
+        else
+            warn "BIND config check failed — review /etc/bind/"
+        fi
     fi
 
     # Restart BIND
@@ -120,6 +170,7 @@ BINDOPTS
     log "BIND9 configuration updated"
 }
 
+install_missing_packages
 fix_bind
 
 # Start services
