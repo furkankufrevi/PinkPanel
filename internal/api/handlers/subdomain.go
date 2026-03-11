@@ -3,22 +3,25 @@ package handlers
 import (
 	"database/sql"
 	"fmt"
+	stdlog "log"
 	"strconv"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/rs/zerolog/log"
 
 	"github.com/pinkpanel/pinkpanel/internal/agent"
+	"github.com/pinkpanel/pinkpanel/internal/core/dns"
 	"github.com/pinkpanel/pinkpanel/internal/core/domain"
 	"github.com/pinkpanel/pinkpanel/internal/core/subdomain"
 	"github.com/pinkpanel/pinkpanel/internal/db"
-	"github.com/pinkpanel/pinkpanel/internal/template"
+	tmpl "github.com/pinkpanel/pinkpanel/internal/template"
 )
 
 type SubdomainHandler struct {
 	DB           *sql.DB
 	SubdomainSvc *subdomain.Service
 	DomainSvc    *domain.Service
+	DNSSvc       *dns.Service
 	AgentClient  *agent.Client
 }
 
@@ -76,7 +79,7 @@ func (h *SubdomainHandler) Create(c *fiber.Ctx) error {
 
 	// Generate NGINX vhost for the subdomain
 	fqdn := fmt.Sprintf("%s.%s", req.Name, dom.Name)
-	vhostConfig, err := template.RenderNginxVhost(template.NginxVhostData{
+	vhostConfig, err := tmpl.RenderNginxVhost(tmpl.NginxVhostData{
 		Domain:       fqdn,
 		DocumentRoot: sub.DocumentRoot,
 		PHPVersion:   dom.PHPVersion,
@@ -106,6 +109,16 @@ func (h *SubdomainHandler) Create(c *fiber.Ctx) error {
 			"service": "nginx", "action": "reload",
 		}); err != nil {
 			log.Error().Err(err).Msg("failed to reload nginx")
+		}
+	}
+
+	// Add DNS A record for the subdomain and regenerate zone
+	if h.DNSSvc != nil {
+		serverIP := getServerIP()
+		if _, err := h.DNSSvc.Create(domainID, "A", req.Name, serverIP, 3600, nil); err != nil {
+			log.Error().Err(err).Str("subdomain", req.Name).Msg("failed to create DNS record for subdomain")
+		} else {
+			h.regenerateParentZone(domainID, dom.Name)
 		}
 	}
 
@@ -154,8 +167,62 @@ func (h *SubdomainHandler) Delete(c *fiber.Ctx) error {
 		log.Error().Err(err).Msg("failed to reload nginx")
 	}
 
+	// Remove DNS record for subdomain and regenerate zone
+	if h.DNSSvc != nil && dom != nil {
+		if err := h.DNSSvc.DeleteByName(sub.DomainID, sub.Name); err != nil {
+			log.Error().Err(err).Str("subdomain", sub.Name).Msg("failed to delete DNS record for subdomain")
+		} else {
+			h.regenerateParentZone(sub.DomainID, dom.Name)
+		}
+	}
+
 	adminID, _ := c.Locals("admin_id").(int64)
 	db.LogActivity(h.DB, adminID, "delete_subdomain", "subdomain", subID, fqdn, c.IP())
 
 	return c.JSON(fiber.Map{"status": "ok"})
+}
+
+// regenerateParentZone rewrites the parent domain's zone file and reloads BIND.
+func (h *SubdomainHandler) regenerateParentZone(domainID int64, domainName string) {
+	records, err := h.DNSSvc.ListByDomain(domainID)
+	if err != nil {
+		stdlog.Printf("WARNING: failed to list DNS records for zone regeneration of %s: %v", domainName, err)
+		return
+	}
+
+	zoneRecords := make([]tmpl.ZoneRecord, 0, len(records))
+	for _, r := range records {
+		zr := tmpl.ZoneRecord{
+			Name:  r.Name,
+			TTL:   r.TTL,
+			Class: "IN",
+			Type:  r.Type,
+			Value: r.Value,
+		}
+		if r.Priority != nil {
+			zr.Priority = *r.Priority
+		}
+		zoneRecords = append(zoneRecords, zr)
+	}
+
+	zoneContent, err := tmpl.RenderZoneFile(tmpl.ZoneFileData{
+		Domain:  domainName,
+		Records: zoneRecords,
+	})
+	if err != nil {
+		stdlog.Printf("WARNING: failed to render zone file for %s: %v", domainName, err)
+		return
+	}
+
+	if _, err = h.AgentClient.Call("dns_write_zone", map[string]any{
+		"domain":  domainName,
+		"content": zoneContent,
+	}); err != nil {
+		stdlog.Printf("WARNING: failed to write zone file for %s: %v", domainName, err)
+		return
+	}
+
+	if _, err = h.AgentClient.Call("dns_reload", nil); err != nil {
+		stdlog.Printf("ERROR: dns reload failed after updating zone for %s: %v", domainName, err)
+	}
 }

@@ -201,6 +201,7 @@ func main() {
 		DB:           database,
 		SubdomainSvc: subdomainSvc,
 		DomainSvc:    domainSvc,
+		DNSSvc:       dnsSvc,
 		AgentClient:  agentClient,
 	}
 
