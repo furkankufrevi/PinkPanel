@@ -819,7 +819,6 @@ func cmdDNSSetup(_ json.RawMessage) (interface{}, error) {
 		return unsupportedOS()
 	}
 
-	// Write named.conf.options to disable recursion and allow queries
 	optionsConf := `options {
     directory "/var/cache/bind";
     listen-on { any; };
@@ -831,11 +830,11 @@ func cmdDNSSetup(_ json.RawMessage) (interface{}, error) {
     version "not disclosed";
 };
 `
-	if err := os.WriteFile("/etc/bind/named.conf.options", []byte(optionsConf), 0644); err != nil {
+	if err := writeFileSync("/etc/bind/named.conf.options", []byte(optionsConf), 0644); err != nil {
 		return nil, fmt.Errorf("writing named.conf.options: %w", err)
 	}
 
-	// Ensure zones directory exists
+	// Ensure zones directory exists with bind-readable permissions
 	if err := os.MkdirAll("/etc/bind/zones", 0755); err != nil {
 		return nil, fmt.Errorf("creating zones dir: %w", err)
 	}
@@ -843,20 +842,21 @@ func cmdDNSSetup(_ json.RawMessage) (interface{}, error) {
 	// Ensure named.conf.local exists
 	localPath := "/etc/bind/named.conf.local"
 	if _, err := os.Stat(localPath); os.IsNotExist(err) {
-		if err := os.WriteFile(localPath, []byte("// PinkPanel managed zones\n"), 0644); err != nil {
+		if err := writeFileSync(localPath, []byte("// PinkPanel managed zones\n"), 0644); err != nil {
 			return nil, fmt.Errorf("creating named.conf.local: %w", err)
 		}
 	}
 
-	// Restart BIND
-	out, err := exec.Command("systemctl", "restart", "named").CombinedOutput()
-	if err != nil {
-		// Try bind9 service name
-		out, err = exec.Command("systemctl", "restart", "bind9").CombinedOutput()
-		if err != nil {
-			return nil, fmt.Errorf("restarting bind: %s", strings.TrimSpace(string(out)))
-		}
+	// Generate rndc key if missing
+	if _, err := os.Stat("/etc/bind/rndc.key"); os.IsNotExist(err) {
+		exec.Command("rndc-confgen", "-a", "-b", "256").CombinedOutput()
 	}
+
+	// Set ownership so bind can read everything
+	exec.Command("chown", "-R", "bind:bind", "/etc/bind/zones").CombinedOutput()
+
+	// Restart BIND
+	restartBIND()
 
 	return map[string]string{"status": "ok"}, nil
 }
@@ -869,13 +869,27 @@ func cmdDNSWriteZone(params json.RawMessage) (interface{}, error) {
 	if !safeNameRe.MatchString(p.Domain) {
 		return nil, fmt.Errorf("invalid domain name: %s", p.Domain)
 	}
-	zonePath := fmt.Sprintf("/etc/bind/zones/db.%s", p.Domain)
+
 	if err := os.MkdirAll("/etc/bind/zones", 0755); err != nil {
 		return nil, fmt.Errorf("creating zones directory: %w", err)
 	}
-	if err := os.WriteFile(zonePath, []byte(p.Content), 0644); err != nil {
+
+	zonePath := fmt.Sprintf("/etc/bind/zones/db.%s", p.Domain)
+	if err := writeFileSync(zonePath, []byte(p.Content), 0644); err != nil {
 		return nil, fmt.Errorf("writing zone file: %w", err)
 	}
+
+	// Set ownership so bind user can read it
+	exec.Command("chown", "bind:bind", zonePath).CombinedOutput()
+
+	// Validate zone file with named-checkzone if available
+	if _, err := exec.LookPath("named-checkzone"); err == nil {
+		out, err := exec.Command("named-checkzone", p.Domain, zonePath).CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("zone file validation failed for %s: %s", p.Domain, strings.TrimSpace(string(out)))
+		}
+	}
+
 	return map[string]string{"status": "ok", "path": zonePath}, nil
 }
 
@@ -891,8 +905,8 @@ func cmdDNSAddZone(params json.RawMessage) (interface{}, error) {
 	namedConfLocal := "/etc/bind/named.conf.local"
 	existing, _ := os.ReadFile(namedConfLocal)
 
-	// Check if zone already exists
-	zoneMarker := fmt.Sprintf("zone \"%s\"", p.Domain)
+	// Check if zone already exists — match exact zone block pattern
+	zoneMarker := fmt.Sprintf("zone \"%s\" {", p.Domain)
 	if strings.Contains(string(existing), zoneMarker) {
 		return map[string]string{"status": "ok", "detail": "zone already registered"}, nil
 	}
@@ -904,10 +918,12 @@ func cmdDNSAddZone(params json.RawMessage) (interface{}, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening named.conf.local: %w", err)
 	}
-	defer f.Close()
 	if _, err := f.WriteString(zoneBlock); err != nil {
+		f.Close()
 		return nil, fmt.Errorf("writing zone block: %w", err)
 	}
+	f.Sync()
+	f.Close()
 
 	return map[string]string{"status": "ok"}, nil
 }
@@ -921,7 +937,6 @@ func cmdDNSRemoveZone(params json.RawMessage) (interface{}, error) {
 		return nil, fmt.Errorf("invalid domain name: %s", p.Domain)
 	}
 
-	// Remove zone block from named.conf.local
 	namedConfLocal := "/etc/bind/named.conf.local"
 	data, err := os.ReadFile(namedConfLocal)
 	if err != nil {
@@ -930,19 +945,17 @@ func cmdDNSRemoveZone(params json.RawMessage) (interface{}, error) {
 
 	// Remove the zone block for this domain
 	content := string(data)
-	zoneStart := fmt.Sprintf("zone \"%s\"", p.Domain)
+	zoneStart := fmt.Sprintf("zone \"%s\" {", p.Domain)
 	startIdx := strings.Index(content, zoneStart)
 	if startIdx != -1 {
-		// Find the closing }; after the zone block
 		endIdx := strings.Index(content[startIdx:], "};")
 		if endIdx != -1 {
 			endIdx += startIdx + 3 // include };\n
-			// Trim leading newline if present
 			if startIdx > 0 && content[startIdx-1] == '\n' {
 				startIdx--
 			}
 			content = content[:startIdx] + content[endIdx:]
-			if err := os.WriteFile(namedConfLocal, []byte(content), 0644); err != nil {
+			if err := writeFileSync(namedConfLocal, []byte(content), 0644); err != nil {
 				return nil, fmt.Errorf("writing named.conf.local: %w", err)
 			}
 		}
@@ -959,22 +972,52 @@ func cmdDNSReload(_ json.RawMessage) (interface{}, error) {
 	if runtime.GOOS != "linux" {
 		return unsupportedOS()
 	}
-	// reconfig picks up new zone definitions from named.conf.local
-	out, err := exec.Command("rndc", "reconfig").CombinedOutput()
-	if err != nil {
-		// Fallback: full restart if rndc fails (e.g. rndc key not set up)
-		out2, err2 := exec.Command("systemctl", "restart", "named").CombinedOutput()
-		if err2 != nil {
-			out2, err2 = exec.Command("systemctl", "restart", "bind9").CombinedOutput()
-			if err2 != nil {
-				return nil, fmt.Errorf("dns reload failed: rndc: %s, systemctl: %s",
-					strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
-			}
-		}
+
+	// Try rndc first (fastest, no downtime)
+	if out, err := exec.Command("rndc", "reconfig").CombinedOutput(); err == nil {
+		// reconfig succeeded — also reload zone data
+		exec.Command("rndc", "reload").CombinedOutput()
+		return map[string]string{"status": "ok", "method": "rndc"}, nil
+	} else {
+		_ = out // rndc failed, fall through to restart
 	}
-	// reload refreshes zone data for already-known zones
-	exec.Command("rndc", "reload").CombinedOutput()
-	return map[string]string{"status": "ok"}, nil
+
+	// Fallback: full restart
+	if err := restartBIND(); err != nil {
+		return nil, err
+	}
+	return map[string]string{"status": "ok", "method": "restart"}, nil
+}
+
+// restartBIND tries named then bind9 service names.
+func restartBIND() error {
+	out, err := exec.Command("systemctl", "restart", "named").CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	out2, err2 := exec.Command("systemctl", "restart", "bind9").CombinedOutput()
+	if err2 == nil {
+		return nil
+	}
+	return fmt.Errorf("restart bind failed: named: %s, bind9: %s",
+		strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
+}
+
+// writeFileSync writes a file and ensures it's flushed to disk.
+func writeFileSync(path string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // ---------- PHP commands ----------

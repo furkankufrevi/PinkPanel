@@ -562,17 +562,35 @@ func (h *DomainHandler) Delete(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": "Domain deleted successfully"})
 }
 
-// getServerIP returns the server's primary IP address.
+// getServerIP returns the server's primary public IPv4 address.
+// Skips loopback and private Docker/container ranges.
 func getServerIP() string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
+		log.Printf("WARNING: failed to get interface addresses: %v", err)
 		return "127.0.0.1"
 	}
+
+	var fallback string
 	for _, addr := range addrs {
-		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
-			return ipNet.IP.String()
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok || ipNet.IP.IsLoopback() || ipNet.IP.To4() == nil {
+			continue
+		}
+		ip := ipNet.IP.String()
+		// Prefer non-private IPs (public)
+		if !ipNet.IP.IsPrivate() {
+			return ip
+		}
+		// Keep first private IP as fallback
+		if fallback == "" {
+			fallback = ip
 		}
 	}
+	if fallback != "" {
+		return fallback
+	}
+	log.Printf("WARNING: no non-loopback IPv4 found, using 127.0.0.1 for DNS records")
 	return "127.0.0.1"
 }
 

@@ -30,6 +30,16 @@ func NewClient(socketPath string) *Client {
 func (c *Client) Connect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.connectLocked()
+}
+
+func (c *Client) connectLocked() error {
+	// Close existing connection if any
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+		c.scanner = nil
+	}
 
 	conn, err := net.DialTimeout("unix", c.socketPath, 5*time.Second)
 	if err != nil {
@@ -47,16 +57,40 @@ func (c *Client) Close() error {
 	defer c.mu.Unlock()
 
 	if c.conn != nil {
-		return c.conn.Close()
+		err := c.conn.Close()
+		c.conn = nil
+		c.scanner = nil
+		return err
 	}
 	return nil
 }
 
 // Call sends a request and waits for the response.
+// Automatically reconnects once if the connection is broken.
 func (c *Client) Call(method string, params interface{}) (*Response, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	resp, err := c.callLocked(method, params)
+	if err != nil && c.conn != nil {
+		// Connection might be broken — try reconnecting once
+		if reconnErr := c.connectLocked(); reconnErr != nil {
+			return nil, fmt.Errorf("agent call failed and reconnect failed: %w (original: %v)", reconnErr, err)
+		}
+		// Retry the call after reconnect
+		resp, err = c.callLocked(method, params)
+	}
+	if err != nil && c.conn == nil {
+		// Not connected at all — try to connect
+		if reconnErr := c.connectLocked(); reconnErr != nil {
+			return nil, fmt.Errorf("not connected to agent: %w", reconnErr)
+		}
+		resp, err = c.callLocked(method, params)
+	}
+	return resp, err
+}
+
+func (c *Client) callLocked(method string, params interface{}) (*Response, error) {
 	if c.conn == nil {
 		return nil, fmt.Errorf("not connected to agent")
 	}
@@ -86,14 +120,23 @@ func (c *Client) Call(method string, params interface{}) (*Response, error) {
 
 	c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	if _, err := c.conn.Write(data); err != nil {
+		c.conn.Close()
+		c.conn = nil
+		c.scanner = nil
 		return nil, fmt.Errorf("writing request: %w", err)
 	}
 
-	c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	if !c.scanner.Scan() {
 		if err := c.scanner.Err(); err != nil {
+			c.conn.Close()
+			c.conn = nil
+			c.scanner = nil
 			return nil, fmt.Errorf("reading response: %w", err)
 		}
+		c.conn.Close()
+		c.conn = nil
+		c.scanner = nil
 		return nil, fmt.Errorf("connection closed")
 	}
 

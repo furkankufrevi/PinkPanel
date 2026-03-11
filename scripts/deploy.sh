@@ -278,6 +278,7 @@ CNF
 
 setup_bind() {
     mkdir -p /etc/bind/zones
+    chown bind:bind /etc/bind/zones
 
     cat > /etc/bind/named.conf.options <<'BINDOPTS'
 options {
@@ -297,7 +298,23 @@ BINDOPTS
         echo "// PinkPanel managed zones" > /etc/bind/named.conf.local
     fi
 
-    log "BIND9 configured (authoritative only)"
+    # Generate rndc key if missing (needed for rndc reconfig/reload)
+    if [[ ! -f /etc/bind/rndc.key ]]; then
+        rndc-confgen -a -b 256 > /dev/null 2>&1
+        chown bind:bind /etc/bind/rndc.key
+    fi
+
+    # Ensure main named.conf includes named.conf.local
+    if [[ -f /etc/bind/named.conf ]] && ! grep -q "named.conf.local" /etc/bind/named.conf; then
+        echo 'include "/etc/bind/named.conf.local";' >> /etc/bind/named.conf
+    fi
+
+    # Test BIND configuration
+    if command -v named-checkconf &>/dev/null; then
+        named-checkconf > /dev/null 2>&1 || warn "BIND config check failed — review /etc/bind/"
+    fi
+
+    log "BIND9 configured (authoritative only, rndc enabled)"
 }
 
 # ── Enable services ───────────────────────────
