@@ -362,7 +362,15 @@ func regenerateZone(h *DNSHandler, domainID int64, domainName string) {
 		return
 	}
 
-	// 5. Reload DNS
+	// 5. Ensure zone is registered in named.conf.local (idempotent)
+	_, err = h.AgentClient.Call("dns_add_zone", map[string]interface{}{
+		"domain": domainName,
+	})
+	if err != nil {
+		log.Printf("WARNING: failed to register zone in BIND for %s: %v", domainName, err)
+	}
+
+	// 6. Reload DNS
 	_, err = h.AgentClient.Call("dns_reload", nil)
 	if err != nil {
 		log.Printf("ERROR: dns reload failed after updating zone for %s: %v", domainName, err)

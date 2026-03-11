@@ -852,6 +852,19 @@ func cmdDNSSetup(_ json.RawMessage) (interface{}, error) {
 		exec.Command("rndc-confgen", "-a", "-b", "256").CombinedOutput()
 	}
 
+	// Ensure main named.conf includes named.conf.local
+	namedConf := "/etc/bind/named.conf"
+	if data, err := os.ReadFile(namedConf); err == nil {
+		if !strings.Contains(string(data), "named.conf.local") {
+			f, err := os.OpenFile(namedConf, os.O_APPEND|os.O_WRONLY, 0644)
+			if err == nil {
+				f.WriteString("\ninclude \"/etc/bind/named.conf.local\";\n")
+				f.Sync()
+				f.Close()
+			}
+		}
+	}
+
 	// Set ownership so bind can read everything
 	exec.Command("chown", "-R", "bind:bind", "/etc/bind/zones").CombinedOutput()
 
