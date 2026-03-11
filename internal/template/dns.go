@@ -3,7 +3,7 @@ package template
 import (
 	"bytes"
 	"fmt"
-	"text/template"
+	"time"
 )
 
 // ZoneRecord represents a single DNS resource record in a BIND9 zone file.
@@ -22,50 +22,91 @@ type ZoneFileData struct {
 	Records []ZoneRecord
 }
 
-const zoneFileTemplate = `$TTL 3600
-$ORIGIN {{ .Domain }}.
+// RenderZoneFile renders a BIND9 zone file from the given data.
+// SOA is always rendered first (required by BIND), then NS, then the rest.
+func RenderZoneFile(data ZoneFileData) (string, error) {
+	var buf bytes.Buffer
+	serial := time.Now().Format("2006010215")
 
-{{ range .Records -}}
-{{ renderRecord . }}
-{{ end -}}
-`
+	buf.WriteString(fmt.Sprintf("$TTL 3600\n$ORIGIN %s.\n\n", data.Domain))
+
+	// 1. Find and render SOA first — if none exists, generate a default
+	hasSoa := false
+	for _, r := range data.Records {
+		if r.Type == "SOA" {
+			buf.WriteString(fmt.Sprintf("@\tIN\tSOA\t%s (\n", r.Value))
+			hasSoa = true
+			break
+		}
+	}
+	if !hasSoa {
+		buf.WriteString(fmt.Sprintf("@\tIN\tSOA\tns1.%s. admin.%s. (\n", data.Domain, data.Domain))
+		buf.WriteString(fmt.Sprintf("\t\t\t\t%s\t; serial\n", serial))
+		buf.WriteString("\t\t\t\t3600\t\t; refresh\n")
+		buf.WriteString("\t\t\t\t900\t\t; retry\n")
+		buf.WriteString("\t\t\t\t1209600\t\t; expire\n")
+		buf.WriteString("\t\t\t\t86400 )\t\t; minimum\n\n")
+	}
+
+	// 2. NS records
+	for _, r := range data.Records {
+		if r.Type == "NS" {
+			buf.WriteString(fmt.Sprintf("%s\t%d\tIN\tNS\t%s\n", r.Name, r.TTL, r.Value))
+		}
+	}
+	buf.WriteString("\n")
+
+	// 3. All other records (skip SOA and NS, already rendered)
+	for _, r := range data.Records {
+		if r.Type == "SOA" || r.Type == "NS" {
+			continue
+		}
+		buf.WriteString(renderRecord(r))
+		buf.WriteString("\n")
+	}
+
+	return buf.String(), nil
+}
 
 // renderRecord formats a single ZoneRecord as a BIND9 zone file line.
 func renderRecord(r ZoneRecord) string {
 	switch r.Type {
-	case "SOA":
-		return fmt.Sprintf("%s\t%d\t%s\t%s\t%s",
-			r.Name, r.TTL, r.Class, r.Type, r.Value)
 	case "MX":
-		return fmt.Sprintf("%s\t%d\t%s\t%s\t%d\t%s",
-			r.Name, r.TTL, r.Class, r.Type, r.Priority, r.Value)
+		return fmt.Sprintf("%s\t%d\tIN\tMX\t%d\t%s",
+			r.Name, r.TTL, r.Priority, r.Value)
 	case "SRV":
-		return fmt.Sprintf("%s\t%d\t%s\t%s\t%d\t%s",
-			r.Name, r.TTL, r.Class, r.Type, r.Priority, r.Value)
+		return fmt.Sprintf("%s\t%d\tIN\tSRV\t%d\t%s",
+			r.Name, r.TTL, r.Priority, r.Value)
 	case "TXT":
-		return fmt.Sprintf("%s\t%d\t%s\t%s\t\"%s\"",
-			r.Name, r.TTL, r.Class, r.Type, r.Value)
+		return fmt.Sprintf("%s\t%d\tIN\tTXT\t\"%s\"",
+			r.Name, r.TTL, r.Value)
 	default:
-		return fmt.Sprintf("%s\t%d\t%s\t%s\t%s",
-			r.Name, r.TTL, r.Class, r.Type, r.Value)
+		return fmt.Sprintf("%s\t%d\tIN\t%s\t%s",
+			r.Name, r.TTL, r.Type, r.Value)
 	}
 }
 
-// RenderZoneFile renders a BIND9 zone file from the given data.
-func RenderZoneFile(data ZoneFileData) (string, error) {
-	funcMap := template.FuncMap{
-		"renderRecord": renderRecord,
-	}
+// RenderNamedConf renders the BIND9 named.conf.options for PinkPanel.
+func RenderNamedConf() string {
+	return `options {
+    directory "/var/cache/bind";
 
-	tmpl, err := template.New("zone-file").Funcs(funcMap).Parse(zoneFileTemplate)
-	if err != nil {
-		return "", err
-	}
+    // Listen on all interfaces
+    listen-on { any; };
+    listen-on-v6 { any; };
 
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return "", err
-	}
+    // Allow queries from anywhere
+    allow-query { any; };
 
-	return buf.String(), nil
+    // Disable recursion (authoritative only)
+    recursion no;
+    allow-recursion { none; };
+
+    // DNSSEC
+    dnssec-validation auto;
+
+    // Hide version
+    version "not disclosed";
+};
+`
 }

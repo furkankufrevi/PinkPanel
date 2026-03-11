@@ -65,6 +65,7 @@ func (r *CommandRegistry) registerBuiltins() {
 	r.commands["nginx_reload"] = cmdNginxReload
 
 	// DNS
+	r.commands["dns_setup"] = cmdDNSSetup
 	r.commands["dns_write_zone"] = cmdDNSWriteZone
 	r.commands["dns_add_zone"] = cmdDNSAddZone
 	r.commands["dns_remove_zone"] = cmdDNSRemoveZone
@@ -812,6 +813,53 @@ func cmdNginxReload(_ json.RawMessage) (interface{}, error) {
 }
 
 // ---------- DNS commands ----------
+
+func cmdDNSSetup(_ json.RawMessage) (interface{}, error) {
+	if runtime.GOOS != "linux" {
+		return unsupportedOS()
+	}
+
+	// Write named.conf.options to disable recursion and allow queries
+	optionsConf := `options {
+    directory "/var/cache/bind";
+    listen-on { any; };
+    listen-on-v6 { any; };
+    allow-query { any; };
+    recursion no;
+    allow-recursion { none; };
+    dnssec-validation auto;
+    version "not disclosed";
+};
+`
+	if err := os.WriteFile("/etc/bind/named.conf.options", []byte(optionsConf), 0644); err != nil {
+		return nil, fmt.Errorf("writing named.conf.options: %w", err)
+	}
+
+	// Ensure zones directory exists
+	if err := os.MkdirAll("/etc/bind/zones", 0755); err != nil {
+		return nil, fmt.Errorf("creating zones dir: %w", err)
+	}
+
+	// Ensure named.conf.local exists
+	localPath := "/etc/bind/named.conf.local"
+	if _, err := os.Stat(localPath); os.IsNotExist(err) {
+		if err := os.WriteFile(localPath, []byte("// PinkPanel managed zones\n"), 0644); err != nil {
+			return nil, fmt.Errorf("creating named.conf.local: %w", err)
+		}
+	}
+
+	// Restart BIND
+	out, err := exec.Command("systemctl", "restart", "named").CombinedOutput()
+	if err != nil {
+		// Try bind9 service name
+		out, err = exec.Command("systemctl", "restart", "bind9").CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("restarting bind: %s", strings.TrimSpace(string(out)))
+		}
+	}
+
+	return map[string]string{"status": "ok"}, nil
+}
 
 func cmdDNSWriteZone(params json.RawMessage) (interface{}, error) {
 	var p zoneWriteParams

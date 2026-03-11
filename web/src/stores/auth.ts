@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { hasTokens } from "@/api/client";
 
 interface AuthState {
   isAuthenticated: boolean;
@@ -8,8 +9,14 @@ interface AuthState {
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
-  isAuthenticated: false,
-  username: null,
-  setAuthenticated: (username) => set({ isAuthenticated: true, username }),
-  clearAuth: () => set({ isAuthenticated: false, username: null }),
+  isAuthenticated: hasTokens(),
+  username: localStorage.getItem("pinkpanel_username"),
+  setAuthenticated: (username) => {
+    localStorage.setItem("pinkpanel_username", username);
+    set({ isAuthenticated: true, username });
+  },
+  clearAuth: () => {
+    localStorage.removeItem("pinkpanel_username");
+    set({ isAuthenticated: false, username: null });
+  },
 }));

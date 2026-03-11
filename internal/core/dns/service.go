@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"regexp"
-	"time"
 )
 
 // allowedTypes lists the DNS record types accepted by the system.
@@ -177,7 +176,6 @@ func (s *Service) DeleteByDomain(domainID int64) error {
 // CreateDefaultRecords inserts the standard set of DNS records for a newly
 // created domain.
 func (s *Service) CreateDefaultRecords(domainID int64, domainName, serverIP string) error {
-	serial := time.Now().Unix()
 	mx10 := 10
 
 	defaults := []struct {
@@ -187,11 +185,19 @@ func (s *Service) CreateDefaultRecords(domainID int64, domainName, serverIP stri
 		ttl      int
 		priority *int
 	}{
-		{"A", "@", serverIP, 3600, nil},
-		{"A", "www", serverIP, 3600, nil},
+		// SOA — mname + rname only; serial/timers are rendered by the zone template
+		{"SOA", "@", fmt.Sprintf("ns1.%s. admin.%s.", domainName, domainName), 86400, nil},
+		// Nameservers
 		{"NS", "@", fmt.Sprintf("ns1.%s.", domainName), 86400, nil},
 		{"NS", "@", fmt.Sprintf("ns2.%s.", domainName), 86400, nil},
-		{"SOA", "@", fmt.Sprintf("ns1.%s. admin.%s. %d 3600 900 1209600 86400", domainName, domainName, serial), 86400, nil},
+		// Glue records — so ns1/ns2 actually resolve
+		{"A", "ns1", serverIP, 3600, nil},
+		{"A", "ns2", serverIP, 3600, nil},
+		// Domain itself
+		{"A", "@", serverIP, 3600, nil},
+		{"A", "www", serverIP, 3600, nil},
+		// Mail
+		{"A", "mail", serverIP, 3600, nil},
 		{"MX", "@", fmt.Sprintf("mail.%s.", domainName), 3600, &mx10},
 	}
 

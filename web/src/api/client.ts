@@ -8,18 +8,35 @@ const api = axios.create({
   },
 });
 
-// Token storage (in-memory for security — not localStorage)
-let accessToken: string | null = null;
-let refreshToken: string | null = null;
+const TOKEN_KEY = "pinkpanel_tokens";
+
+// Load tokens from localStorage on init
+function loadTokens(): { access: string | null; refresh: string | null } {
+  try {
+    const raw = localStorage.getItem(TOKEN_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return { access: parsed.access_token ?? null, refresh: parsed.refresh_token ?? null };
+    }
+  } catch {
+    // corrupted — clear it
+    localStorage.removeItem(TOKEN_KEY);
+  }
+  return { access: null, refresh: null };
+}
+
+let { access: accessToken, refresh: refreshToken } = loadTokens();
 
 export function setTokens(tokens: TokenPair) {
   accessToken = tokens.access_token;
   refreshToken = tokens.refresh_token;
+  localStorage.setItem(TOKEN_KEY, JSON.stringify(tokens));
 }
 
 export function clearTokens() {
   accessToken = null;
   refreshToken = null;
+  localStorage.removeItem(TOKEN_KEY);
 }
 
 export function getAccessToken() {
@@ -28,6 +45,10 @@ export function getAccessToken() {
 
 export function getRefreshToken() {
   return refreshToken;
+}
+
+export function hasTokens() {
+  return !!accessToken && !!refreshToken;
 }
 
 // Request interceptor — attach access token

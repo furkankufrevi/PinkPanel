@@ -274,11 +274,37 @@ CNF
     fi
 }
 
+# ── Configure BIND9 ──────────────────────────
+
+setup_bind() {
+    mkdir -p /etc/bind/zones
+
+    cat > /etc/bind/named.conf.options <<'BINDOPTS'
+options {
+    directory "/var/cache/bind";
+    listen-on { any; };
+    listen-on-v6 { any; };
+    allow-query { any; };
+    recursion no;
+    allow-recursion { none; };
+    dnssec-validation auto;
+    version "not disclosed";
+};
+BINDOPTS
+
+    # Ensure named.conf.local exists for zone entries
+    if [[ ! -f /etc/bind/named.conf.local ]]; then
+        echo "// PinkPanel managed zones" > /etc/bind/named.conf.local
+    fi
+
+    log "BIND9 configured (authoritative only)"
+}
+
 # ── Enable services ───────────────────────────
 
 enable_services() {
     systemctl enable --now nginx > /dev/null 2>&1
-    systemctl enable named > /dev/null 2>&1 || systemctl enable bind9 > /dev/null 2>&1 || true
+    systemctl enable --now named > /dev/null 2>&1 || systemctl enable --now bind9 > /dev/null 2>&1 || true
     systemctl enable --now vsftpd > /dev/null 2>&1
     systemctl enable --now php8.3-fpm > /dev/null 2>&1
     log "Services enabled"
@@ -363,6 +389,7 @@ main() {
     setup_config
     setup_systemd
     secure_mariadb
+    setup_bind
     enable_services
     setup_firewall
     start_pinkpanel
