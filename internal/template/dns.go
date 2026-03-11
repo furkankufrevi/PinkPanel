@@ -26,6 +26,7 @@ type ZoneFileData struct {
 // generateSerial creates a YYYYMMDDNN-style serial number.
 // Uses current date plus a nanosecond-derived counter (00-99) to avoid
 // collisions when multiple zone updates happen on the same day.
+// Note: fits in a 32-bit unsigned SOA serial until year 4294 (max 4294967295).
 func generateSerial() string {
 	now := time.Now().UTC()
 	// Use last 2 digits of nanosecond as NN counter — good enough to avoid

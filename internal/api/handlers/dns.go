@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"sync"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -14,6 +15,23 @@ import (
 	"github.com/pinkpanel/pinkpanel/internal/db"
 	tmpl "github.com/pinkpanel/pinkpanel/internal/template"
 )
+
+// zoneMutexes protects concurrent zone regenerations per domain.
+var (
+	zoneMutexes   = make(map[string]*sync.Mutex)
+	zoneMutexesMu sync.Mutex
+)
+
+func getZoneMutex(domainName string) *sync.Mutex {
+	zoneMutexesMu.Lock()
+	defer zoneMutexesMu.Unlock()
+	mu, ok := zoneMutexes[domainName]
+	if !ok {
+		mu = &sync.Mutex{}
+		zoneMutexes[domainName] = mu
+	}
+	return mu
+}
 
 // DNSHandler handles DNS record CRUD operations.
 type DNSHandler struct {
@@ -125,13 +143,17 @@ func (h *DNSHandler) CreateRecord(c *fiber.Ctx) error {
 	}
 
 	// Regenerate zone file (non-fatal)
-	regenerateZone(h, domainID, d.Name)
+	zoneWarn := regenerateZone(h, domainID, d.Name)
 
 	// Log activity
 	adminID, _ := c.Locals("admin_id").(int64)
 	_ = db.LogActivity(h.DB, adminID, "dns_create", "dns_record", record.ID, d.Name, c.IP())
 
-	return c.Status(fiber.StatusCreated).JSON(record)
+	resp := fiber.Map{"data": record}
+	if zoneWarn != "" {
+		resp["warning"] = "DNS record saved but zone update failed: " + zoneWarn
+	}
+	return c.Status(fiber.StatusCreated).JSON(resp)
 }
 
 // UpdateRecord updates an existing DNS record.
@@ -189,13 +211,17 @@ func (h *DNSHandler) UpdateRecord(c *fiber.Ctx) error {
 	}
 
 	// Regenerate zone file (non-fatal)
-	regenerateZone(h, existing.DomainID, d.Name)
+	zoneWarn := regenerateZone(h, existing.DomainID, d.Name)
 
 	// Log activity
 	adminID, _ := c.Locals("admin_id").(int64)
 	_ = db.LogActivity(h.DB, adminID, "dns_update", "dns_record", record.ID, d.Name, c.IP())
 
-	return c.JSON(record)
+	resp := fiber.Map{"data": record}
+	if zoneWarn != "" {
+		resp["warning"] = "DNS record updated but zone update failed: " + zoneWarn
+	}
+	return c.JSON(resp)
 }
 
 // DeleteRecord removes a DNS record.
@@ -242,13 +268,17 @@ func (h *DNSHandler) DeleteRecord(c *fiber.Ctx) error {
 	}
 
 	// Regenerate zone file (non-fatal)
-	regenerateZone(h, existing.DomainID, d.Name)
+	zoneWarn := regenerateZone(h, existing.DomainID, d.Name)
 
 	// Log activity
 	adminID, _ := c.Locals("admin_id").(int64)
 	_ = db.LogActivity(h.DB, adminID, "dns_delete", "dns_record", existing.ID, d.Name, c.IP())
 
-	return c.JSON(fiber.Map{"message": "DNS record deleted successfully"})
+	resp := fiber.Map{"message": "DNS record deleted successfully"}
+	if zoneWarn != "" {
+		resp["warning"] = "DNS record deleted but zone update failed: " + zoneWarn
+	}
+	return c.JSON(resp)
 }
 
 // ResetDefaults deletes all DNS records for a domain and recreates the default set.
@@ -295,7 +325,7 @@ func (h *DNSHandler) ResetDefaults(c *fiber.Ctx) error {
 	}
 
 	// Regenerate zone file
-	regenerateZone(h, domainID, d.Name)
+	zoneWarn := regenerateZone(h, domainID, d.Name)
 
 	// Log activity
 	adminID, _ := c.Locals("admin_id").(int64)
@@ -307,20 +337,31 @@ func (h *DNSHandler) ResetDefaults(c *fiber.Ctx) error {
 		records = []dns.Record{}
 	}
 
-	return c.JSON(fiber.Map{
+	resp := fiber.Map{
 		"data":    records,
 		"message": "DNS records reset to defaults",
-	})
+	}
+	if zoneWarn != "" {
+		resp["warning"] = "DNS records reset but zone update failed: " + zoneWarn
+	}
+	return c.JSON(resp)
 }
 
 // regenerateZone rebuilds the BIND9 zone file for a domain and pushes it
-// to the server via the agent. All errors are logged but non-fatal.
-func regenerateZone(h *DNSHandler, domainID int64, domainName string) {
+// to the server via the agent. Returns a warning string if zone regeneration
+// failed (empty on success). Errors are also logged.
+func regenerateZone(h *DNSHandler, domainID int64, domainName string) string {
+	// Serialize concurrent zone updates for the same domain
+	mu := getZoneMutex(domainName)
+	mu.Lock()
+	defer mu.Unlock()
+
 	// 1. List all records for the domain
 	records, err := h.DNSSvc.ListByDomain(domainID)
 	if err != nil {
-		log.Printf("WARNING: failed to list DNS records for zone regeneration of %s: %v", domainName, err)
-		return
+		msg := fmt.Sprintf("failed to list DNS records for zone regeneration of %s: %v", domainName, err)
+		log.Printf("WARNING: %s", msg)
+		return msg
 	}
 
 	// 2. Convert to ZoneRecord slice
@@ -348,8 +389,9 @@ func regenerateZone(h *DNSHandler, domainID int64, domainName string) {
 		Records: zoneRecords,
 	})
 	if err != nil {
-		log.Printf("WARNING: failed to render zone file for %s: %v", domainName, err)
-		return
+		msg := fmt.Sprintf("failed to render zone file for %s: %v", domainName, err)
+		log.Printf("WARNING: %s", msg)
+		return msg
 	}
 
 	// 4. Write zone file via agent
@@ -358,8 +400,9 @@ func regenerateZone(h *DNSHandler, domainID int64, domainName string) {
 		"content": zoneContent,
 	})
 	if err != nil {
-		log.Printf("WARNING: failed to write zone file for %s: %v", domainName, err)
-		return
+		msg := fmt.Sprintf("failed to write zone file for %s: %v", domainName, err)
+		log.Printf("WARNING: %s", msg)
+		return msg
 	}
 
 	// 5. Ensure zone is registered in named.conf.local (idempotent)
@@ -367,12 +410,18 @@ func regenerateZone(h *DNSHandler, domainID int64, domainName string) {
 		"domain": domainName,
 	})
 	if err != nil {
-		log.Printf("WARNING: failed to register zone in BIND for %s: %v", domainName, err)
+		msg := fmt.Sprintf("failed to register zone in BIND for %s: %v", domainName, err)
+		log.Printf("WARNING: %s", msg)
+		return msg
 	}
 
 	// 6. Reload DNS
 	_, err = h.AgentClient.Call("dns_reload", nil)
 	if err != nil {
-		log.Printf("ERROR: dns reload failed after updating zone for %s: %v", domainName, err)
+		msg := fmt.Sprintf("dns reload failed after updating zone for %s: %v", domainName, err)
+		log.Printf("ERROR: %s", msg)
+		return msg
 	}
+
+	return ""
 }
