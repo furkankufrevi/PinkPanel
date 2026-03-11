@@ -11,6 +11,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -41,12 +42,16 @@ export function DomainSettings() {
 
   const [documentRoot, setDocumentRoot] = useState("");
   const [phpVersion, setPhpVersion] = useState("8.3");
+  const [separateDNS, setSeparateDNS] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+
+  const isSubdomain = !!domain?.parent_id;
 
   useEffect(() => {
     if (domain) {
       setDocumentRoot(domain.document_root);
       setPhpVersion(domain.php_version);
+      setSeparateDNS(domain.separate_dns);
     }
   }, [domain]);
 
@@ -55,6 +60,7 @@ export function DomainSettings() {
       updateDomain(Number(id), {
         document_root: documentRoot,
         php_version: phpVersion,
+        ...(isSubdomain ? { separate_dns: separateDNS } : {}),
       }),
     onSuccess: () => {
       toast.success("Domain settings updated");
@@ -130,6 +136,23 @@ export function DomainSettings() {
               </SelectContent>
             </Select>
           </div>
+          {isSubdomain && (
+            <>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>Separate DNS Zone</Label>
+                  <p className="text-sm text-muted-foreground">
+                    Create an independent DNS zone for this subdomain instead of using the parent's zone
+                  </p>
+                </div>
+                <Switch
+                  checked={separateDNS}
+                  onCheckedChange={setSeparateDNS}
+                />
+              </div>
+            </>
+          )}
           <Button
             onClick={() => updateMutation.mutate()}
             disabled={updateMutation.isPending}
@@ -145,7 +168,7 @@ export function DomainSettings() {
       <Card className="border-destructive/50">
         <CardHeader>
           <CardTitle className="text-destructive">Danger Zone</CardTitle>
-          <CardDescription>Irreversible actions for this domain</CardDescription>
+          <CardDescription>Irreversible actions for this {isSubdomain ? "subdomain" : "domain"}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center justify-between">
@@ -182,9 +205,9 @@ export function DomainSettings() {
 
           <div className="flex items-center justify-between">
             <div>
-              <p className="font-medium">Delete Domain</p>
+              <p className="font-medium">Delete {isSubdomain ? "Subdomain" : "Domain"}</p>
               <p className="text-sm text-muted-foreground">
-                Permanently delete this domain and all its data
+                Permanently delete this {isSubdomain ? "subdomain" : "domain"} and all its data
               </p>
             </div>
             <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
@@ -197,10 +220,10 @@ export function DomainSettings() {
       <ConfirmDialog
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
-        title="Delete Domain"
+        title={`Delete ${isSubdomain ? "Subdomain" : "Domain"}`}
         description={`This will permanently delete ${domain.name} and all associated files, databases, and configuration.`}
         typeToConfirm={domain.name}
-        confirmText="Delete Domain"
+        confirmText={`Delete ${isSubdomain ? "Subdomain" : "Domain"}`}
         destructive
         loading={deleteMutation.isPending}
         onConfirm={() => deleteMutation.mutate()}

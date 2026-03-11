@@ -27,7 +27,6 @@ import (
 	"github.com/pinkpanel/pinkpanel/internal/core/backup"
 	"github.com/pinkpanel/pinkpanel/internal/core/ftp"
 	"github.com/pinkpanel/pinkpanel/internal/core/ssl"
-	"github.com/pinkpanel/pinkpanel/internal/core/subdomain"
 	"github.com/pinkpanel/pinkpanel/internal/db"
 	"github.com/pinkpanel/pinkpanel/internal/logger"
 )
@@ -128,13 +127,11 @@ func main() {
 	// Domain service & handler
 	domainSvc := &domain.Service{DB: database}
 	dnsSvc := &dns.Service{DB: database}
-	subdomainSvc := &subdomain.Service{DB: database}
 	domainHandler := &handlers.DomainHandler{
-		DB:           database,
-		DomainSvc:    domainSvc,
-		DNSSvc:       dnsSvc,
-		SubdomainSvc: subdomainSvc,
-		AgentClient:  agentClient,
+		DB:          database,
+		DomainSvc:   domainSvc,
+		DNSSvc:      dnsSvc,
+		AgentClient: agentClient,
 	}
 
 	// DNS handler
@@ -197,15 +194,6 @@ func main() {
 		AgentClient: agentClient,
 	}
 
-	// Subdomain handler
-	subdomainHandler := &handlers.SubdomainHandler{
-		DB:           database,
-		SubdomainSvc: subdomainSvc,
-		DomainSvc:    domainSvc,
-		DNSSvc:       dnsSvc,
-		AgentClient:  agentClient,
-	}
-
 	// Settings handler
 	settingsHandler := &handlers.SettingsHandler{
 		DB:          database,
@@ -244,11 +232,6 @@ func main() {
 	protected.Delete("/domains/:id", domainHandler.Delete)
 	protected.Post("/domains/:id/suspend", domainHandler.Suspend)
 	protected.Post("/domains/:id/activate", domainHandler.Activate)
-
-	// Subdomain routes
-	protected.Get("/domains/:id/subdomains", subdomainHandler.List)
-	protected.Post("/domains/:id/subdomains", subdomainHandler.Create)
-	protected.Delete("/domains/:id/subdomains/:subId", subdomainHandler.Delete)
 
 	// DNS routes
 	protected.Get("/domains/:id/dns", dnsHandler.ListRecords)

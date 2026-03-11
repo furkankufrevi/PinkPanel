@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useParams, useNavigate, useLocation, Outlet } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -15,14 +16,14 @@ import {
   Settings,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { getDomain } from "@/api/domains";
 
-const tabs = [
+const allTabs = [
   { value: "overview", label: "Overview", icon: LayoutGrid },
-  { value: "subdomains", label: "Subdomains", icon: Network },
   { value: "dns", label: "DNS", icon: Globe },
   { value: "ssl", label: "SSL", icon: Shield },
   { value: "php", label: "PHP", icon: Code },
@@ -46,6 +47,25 @@ export function DomainDetailLayout() {
     enabled: !!domainId,
   });
 
+  // Fetch parent domain name if this is a subdomain
+  const parentId = domain?.parent_id;
+  const { data: parentDomain } = useQuery({
+    queryKey: ["domain", parentId],
+    queryFn: () => getDomain(parentId!),
+    enabled: !!parentId,
+  });
+
+  const isSubdomain = !!domain?.parent_id;
+  const hasSeparateDNS = domain?.separate_dns ?? false;
+
+  const tabs = useMemo(() => {
+    return allTabs.filter((tab) => {
+      // Hide DNS tab for subdomains without separate DNS
+      if (tab.value === "dns" && isSubdomain && !hasSeparateDNS) return false;
+      return true;
+    });
+  }, [isSubdomain, hasSeparateDNS]);
+
   const pathParts = location.pathname.split("/");
   const activeTab = pathParts[3] || "overview";
 
@@ -66,12 +86,30 @@ export function DomainDetailLayout() {
         ) : (
           <div className="flex items-center gap-3 min-w-0">
             <div className="rounded-lg bg-pink-500/10 p-2">
-              <Globe className="h-5 w-5 text-pink-500" />
+              {isSubdomain ? (
+                <Network className="h-5 w-5 text-pink-500" />
+              ) : (
+                <Globe className="h-5 w-5 text-pink-500" />
+              )}
             </div>
             <div className="min-w-0">
               <h1 className="text-xl font-bold truncate">{domain?.name}</h1>
+              {isSubdomain && parentDomain && (
+                <p className="text-xs text-muted-foreground">
+                  Subdomain of{" "}
+                  <button
+                    className="text-pink-500 hover:underline"
+                    onClick={() => navigate(`/domains/${parentDomain.id}/overview`)}
+                  >
+                    {parentDomain.name}
+                  </button>
+                </p>
+              )}
             </div>
             {domain && <StatusBadge status={domain.status} />}
+            {isSubdomain && (
+              <Badge variant="outline" className="text-xs">Subdomain</Badge>
+            )}
           </div>
         )}
       </div>

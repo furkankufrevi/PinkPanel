@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
@@ -12,6 +12,7 @@ import {
   Trash2,
   Code,
   FolderOpen,
+  Network,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -37,6 +38,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { CreateDomainSheet } from "./create-domain-sheet";
+import { CreateSubdomainSheet } from "./create-subdomain-sheet";
 import {
   listDomains,
   suspendDomain,
@@ -53,6 +55,7 @@ export function DomainsPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(1);
   const [createOpen, setCreateOpen] = useState(false);
+  const [createSubOpen, setCreateSubOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Domain | null>(null);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -64,7 +67,7 @@ export function DomainsPage() {
         search: search || undefined,
         status: statusFilter === "all" ? undefined : statusFilter,
         page,
-        per_page: 50,
+        per_page: 100,
       }),
   });
 
@@ -108,20 +111,143 @@ export function DomainsPage() {
     },
   });
 
-  const domains = data?.data ?? [];
+  const allDomains = data?.data ?? [];
+
+  // Group: root domains and their children
+  const { rootDomains, childrenMap } = useMemo(() => {
+    const roots: Domain[] = [];
+    const children: Record<number, Domain[]> = {};
+
+    for (const d of allDomains) {
+      if (d.parent_id == null) {
+        roots.push(d);
+      } else {
+        if (!children[d.parent_id]) children[d.parent_id] = [];
+        children[d.parent_id].push(d);
+      }
+    }
+
+    return { rootDomains: roots, childrenMap: children };
+  }, [allDomains]);
+
+  function DomainCard({ domain, isChild }: { domain: Domain; isChild?: boolean }) {
+    return (
+      <Card
+        className={`cursor-pointer transition-all hover:ring-2 hover:ring-pink-500/20 hover:shadow-md ${isChild ? "ml-6 border-l-2 border-l-pink-500/30" : ""}`}
+        onClick={() => navigate(`/domains/${domain.id}/overview`)}
+      >
+        <CardContent className="pt-0">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className={`rounded-lg p-2.5 shrink-0 ${isChild ? "bg-blue-500/10" : "bg-pink-500/10"}`}>
+                {isChild ? (
+                  <Network className="h-5 w-5 text-blue-500" />
+                ) : (
+                  <Globe className="h-5 w-5 text-pink-500" />
+                )}
+              </div>
+              <div className="min-w-0">
+                <p className="font-semibold truncate">{domain.name}</p>
+                <div className="flex items-center gap-2 mt-1">
+                  <StatusBadge status={domain.status} />
+                  {isChild && (
+                    <span className="text-xs text-muted-foreground">Subdomain</span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+                  <MoreVertical className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    window.open(`http://${domain.name}`, "_blank");
+                  }}
+                >
+                  <ExternalLink className="mr-2 h-4 w-4" />
+                  Visit Site
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                {domain.status === "active" ? (
+                  <DropdownMenuItem
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      suspendMutation.mutate(domain.id);
+                    }}
+                  >
+                    <Pause className="mr-2 h-4 w-4" />
+                    Suspend
+                  </DropdownMenuItem>
+                ) : (
+                  <DropdownMenuItem
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      activateMutation.mutate(domain.id);
+                    }}
+                  >
+                    <Play className="mr-2 h-4 w-4" />
+                    Activate
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="text-red-500 focus:text-red-500"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDeleteTarget(domain);
+                  }}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+
+          {/* Info row */}
+          <div className="flex items-center gap-4 mt-3 pt-3 border-t border-border">
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Code className="h-3 w-3" />
+              PHP {domain.php_version}
+            </div>
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground truncate">
+              <FolderOpen className="h-3 w-3 shrink-0" />
+              <span className="truncate">{domain.document_root}</span>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Domains</h1>
-        <Button
-          onClick={() => setCreateOpen(true)}
-          className="bg-pink-500 hover:bg-pink-600"
-        >
-          <Plus className="mr-2 h-4 w-4" />
-          Add Domain
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => setCreateSubOpen(true)}
+          >
+            <Network className="mr-2 h-4 w-4" />
+            Add Subdomain
+          </Button>
+          <Button
+            onClick={() => setCreateOpen(true)}
+            className="bg-pink-500 hover:bg-pink-600"
+          >
+            <Plus className="mr-2 h-4 w-4" />
+            Add Domain
+          </Button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -163,7 +289,7 @@ export function DomainsPage() {
             <Skeleton key={i} className="h-36 rounded-xl" />
           ))}
         </div>
-      ) : domains.length === 0 ? (
+      ) : rootDomains.length === 0 && allDomains.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-16 text-center">
             <div className="rounded-full bg-muted p-4 mb-4">
@@ -183,102 +309,20 @@ export function DomainsPage() {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {domains.map((domain) => (
-            <Card
-              key={domain.id}
-              className="cursor-pointer transition-all hover:ring-2 hover:ring-pink-500/20 hover:shadow-md"
-              onClick={() =>
-                navigate(`/domains/${domain.id}/overview`)
-              }
-            >
-              <CardContent className="pt-0">
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="rounded-lg bg-pink-500/10 p-2.5 shrink-0">
-                      <Globe className="h-5 w-5 text-pink-500" />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="font-semibold truncate">{domain.name}</p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <StatusBadge status={domain.status} />
-                      </div>
-                    </div>
-                  </div>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
-                        <MoreVertical className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          window.open(`http://${domain.name}`, "_blank");
-                        }}
-                      >
-                        <ExternalLink className="mr-2 h-4 w-4" />
-                        Visit Site
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      {domain.status === "active" ? (
-                        <DropdownMenuItem
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            suspendMutation.mutate(domain.id);
-                          }}
-                        >
-                          <Pause className="mr-2 h-4 w-4" />
-                          Suspend
-                        </DropdownMenuItem>
-                      ) : (
-                        <DropdownMenuItem
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            activateMutation.mutate(domain.id);
-                          }}
-                        >
-                          <Play className="mr-2 h-4 w-4" />
-                          Activate
-                        </DropdownMenuItem>
-                      )}
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        className="text-red-500 focus:text-red-500"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDeleteTarget(domain);
-                        }}
-                      >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-
-                {/* Info row */}
-                <div className="flex items-center gap-4 mt-3 pt-3 border-t border-border">
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <Code className="h-3 w-3" />
-                    PHP {domain.php_version}
-                  </div>
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground truncate">
-                    <FolderOpen className="h-3 w-3 shrink-0" />
-                    <span className="truncate">{domain.document_root}</span>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+        <div className="space-y-3">
+          {rootDomains.map((domain) => (
+            <div key={domain.id} className="space-y-2">
+              <DomainCard domain={domain} />
+              {childrenMap[domain.id]?.map((child) => (
+                <DomainCard key={child.id} domain={child} isChild />
+              ))}
+            </div>
           ))}
         </div>
       )}
 
       {/* Pagination */}
-      {data && data.total > 50 && (
+      {data && data.total > 100 && (
         <div className="flex items-center justify-center gap-2">
           <Button
             variant="outline"
@@ -289,12 +333,12 @@ export function DomainsPage() {
             Previous
           </Button>
           <span className="text-sm text-muted-foreground">
-            Page {page} of {Math.ceil(data.total / 50)}
+            Page {page} of {Math.ceil(data.total / 100)}
           </span>
           <Button
             variant="outline"
             size="sm"
-            disabled={page >= Math.ceil(data.total / 50)}
+            disabled={page >= Math.ceil(data.total / 100)}
             onClick={() => setPage(page + 1)}
           >
             Next
@@ -303,14 +347,19 @@ export function DomainsPage() {
       )}
 
       <CreateDomainSheet open={createOpen} onOpenChange={setCreateOpen} />
+      <CreateSubdomainSheet
+        open={createSubOpen}
+        onOpenChange={setCreateSubOpen}
+        parentDomains={rootDomains}
+      />
 
       <ConfirmDialog
         open={!!deleteTarget}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
-        title="Delete Domain"
+        title={deleteTarget?.parent_id ? "Delete Subdomain" : "Delete Domain"}
         description={`This will permanently delete ${deleteTarget?.name} and all its files, configuration, and data. This action cannot be undone.`}
         typeToConfirm={deleteTarget?.name}
-        confirmText="Delete Domain"
+        confirmText={deleteTarget?.parent_id ? "Delete Subdomain" : "Delete Domain"}
         destructive
         loading={deleteMutation.isPending}
         onConfirm={() =>

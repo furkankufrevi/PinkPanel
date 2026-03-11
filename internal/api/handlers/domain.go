@@ -13,29 +13,29 @@ import (
 	"github.com/pinkpanel/pinkpanel/internal/core/dns"
 	"github.com/pinkpanel/pinkpanel/internal/core/domain"
 	"github.com/pinkpanel/pinkpanel/internal/core/php"
-	"github.com/pinkpanel/pinkpanel/internal/core/subdomain"
 	"github.com/pinkpanel/pinkpanel/internal/db"
 	tmpl "github.com/pinkpanel/pinkpanel/internal/template"
 )
 
 // DomainHandler handles domain CRUD and lifecycle operations.
 type DomainHandler struct {
-	DB           *sql.DB
-	DomainSvc    *domain.Service
-	DNSSvc       *dns.Service
-	SubdomainSvc *subdomain.Service
-	AgentClient  *agent.Client
+	DB          *sql.DB
+	DomainSvc   *domain.Service
+	DNSSvc      *dns.Service
+	AgentClient *agent.Client
 }
 
 type createDomainRequest struct {
-	Name       string `json:"name"`
+	Name      string `json:"name"`
 	PHPVersion string `json:"php_version"`
-	CreateWWW  bool   `json:"create_www"`
+	CreateWWW bool   `json:"create_www"`
+	ParentID  *int64 `json:"parent_id"`
 }
 
 type updateDomainRequest struct {
 	DocumentRoot string `json:"document_root"`
 	PHPVersion   string `json:"php_version"`
+	SeparateDNS  *bool  `json:"separate_dns"`
 }
 
 // List returns a paginated list of domains.
@@ -127,13 +127,41 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 		phpVersion = "8.3"
 	}
 
+	// If creating a subdomain, build the FQDN
+	var parentDomain *domain.Domain
+	if req.ParentID != nil {
+		var err error
+		parentDomain, err = h.DomainSvc.GetByID(*req.ParentID)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": fiber.Map{
+					"code":    "VALIDATION_ERROR",
+					"message": "Parent domain not found",
+				},
+			})
+		}
+		if parentDomain.ParentID != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": fiber.Map{
+					"code":    "VALIDATION_ERROR",
+					"message": "Cannot create subdomain of a subdomain",
+				},
+			})
+		}
+		// Build FQDN: req.Name should be just the subdomain prefix (e.g. "blog")
+		// or already FQDN — if it doesn't end with parent name, prepend
+		if !containsSuffix(req.Name, parentDomain.Name) {
+			req.Name = req.Name + "." + parentDomain.Name
+		}
+	}
+
 	// Create domain in DB
-	d, err := h.DomainSvc.Create(req.Name, phpVersion)
+	d, err := h.DomainSvc.Create(req.Name, phpVersion, req.ParentID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": fiber.Map{
 				"code":    "INTERNAL_ERROR",
-				"message": "Failed to create domain",
+				"message": fmt.Sprintf("Failed to create domain: %v", err),
 			},
 		})
 	}
@@ -187,13 +215,23 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 		}
 	}
 
-	// Create default DNS records (do this before NGINX so it always happens)
+	// DNS handling
 	serverIP := getServerIP()
-	if err := h.DNSSvc.CreateDefaultRecords(d.ID, d.Name, serverIP); err != nil {
-		log.Printf("WARNING: failed to create default DNS records for %s: %v", d.Name, err)
+	if parentDomain != nil {
+		// Subdomain: add A record to parent zone (separate_dns defaults to false)
+		subPrefix := extractSubPrefix(d.Name, parentDomain.Name)
+		if _, err := h.DNSSvc.Create(parentDomain.ID, "A", subPrefix, serverIP, 3600, nil); err != nil {
+			log.Printf("WARNING: failed to create DNS A record for subdomain %s: %v", d.Name, err)
+		} else {
+			provisionDNSZone(h.DNSSvc, h.AgentClient, parentDomain.ID, parentDomain.Name)
+		}
 	} else {
-		// Generate zone file and register in BIND
-		provisionDNSZone(h.DNSSvc, h.AgentClient, d.ID, d.Name)
+		// Root domain: create full DNS zone
+		if err := h.DNSSvc.CreateDefaultRecords(d.ID, d.Name, serverIP); err != nil {
+			log.Printf("WARNING: failed to create default DNS records for %s: %v", d.Name, err)
+		} else {
+			provisionDNSZone(h.DNSSvc, h.AgentClient, d.ID, d.Name)
+		}
 	}
 
 	// Render NGINX vhost configuration
@@ -240,7 +278,11 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 
 	// Log activity (non-critical)
 	adminID, _ := c.Locals("admin_id").(int64)
-	_ = db.LogActivity(h.DB, adminID, "domain_create", "domain", d.ID, d.Name, c.IP())
+	action := "domain_create"
+	if parentDomain != nil {
+		action = "subdomain_create"
+	}
+	_ = db.LogActivity(h.DB, adminID, action, "domain", d.ID, d.Name, c.IP())
 
 	return c.Status(fiber.StatusCreated).JSON(d)
 }
@@ -275,6 +317,14 @@ func (h *DomainHandler) Update(c *fiber.Ctx) error {
 				"message": "Invalid request body",
 			},
 		})
+	}
+
+	// Handle separate_dns toggle for subdomains
+	if req.SeparateDNS != nil && existing.ParentID != nil {
+		newVal := *req.SeparateDNS
+		if newVal != existing.SeparateDNS {
+			h.toggleSeparateDNS(existing, newVal)
+		}
 	}
 
 	docRoot := req.DocumentRoot
@@ -342,6 +392,42 @@ func (h *DomainHandler) Update(c *fiber.Ctx) error {
 	_ = db.LogActivity(h.DB, adminID, "domain_update", "domain", d.ID, d.Name, c.IP())
 
 	return c.JSON(d)
+}
+
+// toggleSeparateDNS handles the DNS transition when toggling separate_dns.
+func (h *DomainHandler) toggleSeparateDNS(d *domain.Domain, separateDNS bool) {
+	parent, err := h.DomainSvc.GetByID(*d.ParentID)
+	if err != nil {
+		log.Printf("WARNING: failed to get parent domain for DNS toggle: %v", err)
+		return
+	}
+	subPrefix := extractSubPrefix(d.Name, parent.Name)
+	serverIP := getServerIP()
+
+	if separateDNS {
+		// Turning ON: remove A from parent zone, create own zone
+		_ = h.DNSSvc.DeleteByName(parent.ID, subPrefix)
+		provisionDNSZone(h.DNSSvc, h.AgentClient, parent.ID, parent.Name)
+
+		if err := h.DNSSvc.CreateDefaultRecords(d.ID, d.Name, serverIP); err != nil {
+			log.Printf("WARNING: failed to create DNS zone for subdomain %s: %v", d.Name, err)
+		} else {
+			provisionDNSZone(h.DNSSvc, h.AgentClient, d.ID, d.Name)
+		}
+	} else {
+		// Turning OFF: remove subdomain zone, add A back to parent
+		_ = h.DNSSvc.DeleteByDomain(d.ID)
+		h.AgentClient.Call("dns_remove_zone", map[string]interface{}{"domain": d.Name})
+		h.AgentClient.Call("dns_reload", nil)
+
+		if _, err := h.DNSSvc.Create(parent.ID, "A", subPrefix, serverIP, 3600, nil); err != nil {
+			log.Printf("WARNING: failed to re-add DNS A record for %s: %v", d.Name, err)
+		} else {
+			provisionDNSZone(h.DNSSvc, h.AgentClient, parent.ID, parent.Name)
+		}
+	}
+
+	h.DomainSvc.UpdateSeparateDNS(d.ID, separateDNS)
 }
 
 // Suspend suspends a domain, replacing its vhost with a suspended page.
@@ -530,17 +616,31 @@ func (h *DomainHandler) Delete(c *fiber.Ctx) error {
 		})
 	}
 
-	// Clean up subdomain NGINX configs before DB cascade deletes the rows
-	if h.SubdomainSvc != nil {
-		subs, _ := h.SubdomainSvc.List(id)
-		for _, sub := range subs {
-			fqdn := fmt.Sprintf("%s.%s", sub.Name, d.Name)
-			h.AgentClient.Call("file_delete", map[string]interface{}{"path": fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", fqdn)})
-			h.AgentClient.Call("file_delete", map[string]interface{}{"path": fmt.Sprintf("/etc/nginx/sites-available/%s.conf", fqdn)})
+	// Clean up child subdomain NGINX configs before DB cascade deletes them
+	children, _ := h.DomainSvc.GetChildren(id)
+	for _, child := range children {
+		h.AgentClient.Call("file_delete", map[string]interface{}{"path": fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", child.Name)})
+		h.AgentClient.Call("file_delete", map[string]interface{}{"path": fmt.Sprintf("/etc/nginx/sites-available/%s.conf", child.Name)})
+		// Remove child PHP pool
+		poolPath := fmt.Sprintf("/etc/php/%s/fpm/pool.d/%s.conf", child.PHPVersion, child.Name)
+		h.AgentClient.Call("file_delete", map[string]interface{}{"path": poolPath})
+		// Remove child DNS zone if it has separate DNS
+		if child.SeparateDNS {
+			h.AgentClient.Call("dns_remove_zone", map[string]interface{}{"domain": child.Name})
 		}
 	}
 
-	// Delete from DB (cascades to subdomains, dns_records)
+	// If this is a subdomain with non-separate DNS, clean the A record from parent
+	if d.ParentID != nil && !d.SeparateDNS {
+		parent, err := h.DomainSvc.GetByID(*d.ParentID)
+		if err == nil {
+			subPrefix := extractSubPrefix(d.Name, parent.Name)
+			_ = h.DNSSvc.DeleteByName(parent.ID, subPrefix)
+			provisionDNSZone(h.DNSSvc, h.AgentClient, parent.ID, parent.Name)
+		}
+	}
+
+	// Delete from DB (cascades to child domains, dns_records)
 	if err := h.DomainSvc.Delete(id); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": fiber.Map{
@@ -581,17 +681,19 @@ func (h *DomainHandler) Delete(c *fiber.Ctx) error {
 		log.Printf("ERROR: nginx reload failed after deleting %s: %v", d.Name, err)
 	}
 
-	// Remove DNS records and zone
-	if err := h.DNSSvc.DeleteByDomain(id); err != nil {
-		log.Printf("WARNING: failed to delete DNS records for %s: %v", d.Name, err)
+	// Remove DNS records and zone (for root domains or subdomains with separate DNS)
+	if d.ParentID == nil || d.SeparateDNS {
+		if err := h.DNSSvc.DeleteByDomain(id); err != nil {
+			log.Printf("WARNING: failed to delete DNS records for %s: %v", d.Name, err)
+		}
+		_, err = h.AgentClient.Call("dns_remove_zone", map[string]interface{}{
+			"domain": d.Name,
+		})
+		if err != nil {
+			log.Printf("WARNING: failed to remove DNS zone for %s: %v", d.Name, err)
+		}
+		_, _ = h.AgentClient.Call("dns_reload", nil)
 	}
-	_, err = h.AgentClient.Call("dns_remove_zone", map[string]interface{}{
-		"domain": d.Name,
-	})
-	if err != nil {
-		log.Printf("WARNING: failed to remove DNS zone for %s: %v", d.Name, err)
-	}
-	_, _ = h.AgentClient.Call("dns_reload", nil)
 
 	// Optionally remove document root
 	removeFiles := c.Query("remove_files") == "true"
@@ -610,6 +712,20 @@ func (h *DomainHandler) Delete(c *fiber.Ctx) error {
 	_ = db.LogActivity(h.DB, adminID, "domain_delete", "domain", d.ID, d.Name, c.IP())
 
 	return c.JSON(fiber.Map{"message": "Domain deleted successfully"})
+}
+
+// containsSuffix checks if name ends with ".suffix"
+func containsSuffix(name, suffix string) bool {
+	return len(name) > len(suffix) && name[len(name)-len(suffix)-1:] == "."+suffix
+}
+
+// extractSubPrefix extracts the subdomain prefix from an FQDN given the parent domain name.
+// e.g. extractSubPrefix("blog.example.com", "example.com") => "blog"
+func extractSubPrefix(fqdn, parentName string) string {
+	if len(fqdn) > len(parentName)+1 {
+		return fqdn[:len(fqdn)-len(parentName)-1]
+	}
+	return fqdn
 }
 
 // getServerIP returns the server's primary public IPv4 address.

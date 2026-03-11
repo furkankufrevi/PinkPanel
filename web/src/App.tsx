@@ -16,7 +16,6 @@ const DomainsPage = lazy(() => import("@/pages/domains").then((m) => ({ default:
 const DomainDetailLayout = lazy(() => import("@/pages/domains/detail/layout").then((m) => ({ default: m.DomainDetailLayout })));
 const DomainOverview = lazy(() => import("@/pages/domains/detail/overview").then((m) => ({ default: m.DomainOverview })));
 const DomainSettings = lazy(() => import("@/pages/domains/detail/settings").then((m) => ({ default: m.DomainSettings })));
-const DomainSubdomains = lazy(() => import("@/pages/domains/detail/subdomains").then((m) => ({ default: m.DomainSubdomains })));
 const DomainDNS = lazy(() => import("@/pages/domains/detail/dns").then((m) => ({ default: m.DomainDNS })));
 const DomainPHP = lazy(() => import("@/pages/domains/detail/php").then((m) => ({ default: m.DomainPHP })));
 const DomainSSL = lazy(() => import("@/pages/domains/detail/ssl").then((m) => ({ default: m.DomainSSL })));
@@ -78,7 +77,6 @@ function App() {
                   <Route path="domains/:id" element={<DomainDetailLayout />}>
                     <Route index element={<Navigate to="overview" replace />} />
                     <Route path="overview" element={<DomainOverview />} />
-                    <Route path="subdomains" element={<DomainSubdomains />} />
                     <Route path="dns" element={<DomainDNS />} />
                     <Route path="ssl" element={<DomainSSL />} />
                     <Route path="php" element={<DomainPHP />} />

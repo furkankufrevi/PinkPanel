@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS subdomains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain_id INTEGER NOT NULL REFERENCES domains(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    document_root TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(domain_id, name)
+);

@@ -29,7 +29,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { getSSLCertificate } from "@/api/ssl";
-import { listSubdomains } from "@/api/subdomains";
+import { listDomains } from "@/api/domains";
 import { listDNSRecords } from "@/api/dns";
 import type { Domain } from "@/types/domain";
 
@@ -47,6 +47,7 @@ export function DomainOverview() {
   const { domain, isLoading } = useOutletContext<DomainContext>();
   const navigate = useNavigate();
   const domainId = domain?.id;
+  const isSubdomain = !!domain?.parent_id;
 
   const { data: ssl } = useQuery({
     queryKey: ["ssl", domainId],
@@ -54,16 +55,17 @@ export function DomainOverview() {
     enabled: !!domainId,
   });
 
-  const { data: subdomains } = useQuery({
-    queryKey: ["subdomains", domainId],
-    queryFn: () => listSubdomains(domainId!),
-    enabled: !!domainId,
+  // Fetch child subdomains for root domains
+  const { data: allDomains } = useQuery({
+    queryKey: ["domains", { per_page: 100 }],
+    queryFn: () => listDomains({ per_page: 100 }),
+    enabled: !!domainId && !isSubdomain,
   });
 
   const { data: dnsRecords } = useQuery({
     queryKey: ["dns", domainId],
     queryFn: () => listDNSRecords(domainId!),
-    enabled: !!domainId,
+    enabled: !!domainId && (!isSubdomain || domain?.separate_dns),
   });
 
   if (isLoading) {
@@ -81,31 +83,51 @@ export function DomainOverview() {
   if (!domain) return null;
 
   const sslInstalled = ssl?.installed ?? false;
-  const subdomainCount = subdomains?.data?.length ?? 0;
+  const childSubdomains = allDomains?.data?.filter((d) => d.parent_id === domain.id) ?? [];
+  const subdomainCount = childSubdomains.length;
   const dnsCount = dnsRecords?.data?.length ?? 0;
 
-  const featureCards = [
-    {
+  const featureCards = [];
+
+  // Only show subdomains card for root domains
+  if (!isSubdomain) {
+    featureCards.push({
       title: "Subdomains",
       description: `${subdomainCount} subdomain${subdomainCount !== 1 ? "s" : ""} configured`,
       icon: Network,
-      tab: "subdomains",
+      action: () => navigate("/domains"),
       color: "text-blue-500",
       bg: "bg-blue-500/10",
-    },
-    {
+    });
+  }
+
+  // DNS card: show for root domains, or subdomains with separate_dns
+  if (!isSubdomain || domain.separate_dns) {
+    featureCards.push({
       title: "DNS Zone",
       description: `${dnsCount} record${dnsCount !== 1 ? "s" : ""} configured`,
       icon: Globe,
-      tab: "dns",
+      action: () => navigate(`/domains/${domain.id}/dns`),
       color: "text-violet-500",
       bg: "bg-violet-500/10",
-    },
+    });
+  } else {
+    featureCards.push({
+      title: "DNS Zone",
+      description: "Managed by parent domain",
+      icon: Globe,
+      action: () => navigate(`/domains/${domain.parent_id}/dns`),
+      color: "text-violet-500/50",
+      bg: "bg-violet-500/5",
+    });
+  }
+
+  featureCards.push(
     {
       title: "SSL/TLS",
       description: sslInstalled ? "Certificate installed" : "No certificate",
       icon: Shield,
-      tab: "ssl",
+      action: () => navigate(`/domains/${domain.id}/ssl`),
       color: sslInstalled ? "text-emerald-500" : "text-amber-500",
       bg: sslInstalled ? "bg-emerald-500/10" : "bg-amber-500/10",
       badge: sslInstalled ? (
@@ -122,7 +144,7 @@ export function DomainOverview() {
       title: "PHP",
       description: `PHP ${domain.php_version} configured`,
       icon: Code,
-      tab: "php",
+      action: () => navigate(`/domains/${domain.id}/php`),
       color: "text-indigo-500",
       bg: "bg-indigo-500/10",
       badge: (
@@ -135,7 +157,7 @@ export function DomainOverview() {
       title: "File Manager",
       description: "Browse and manage files",
       icon: FolderOpen,
-      tab: "files",
+      action: () => navigate(`/domains/${domain.id}/files`),
       color: "text-orange-500",
       bg: "bg-orange-500/10",
     },
@@ -143,7 +165,7 @@ export function DomainOverview() {
       title: "Databases",
       description: "MySQL databases",
       icon: HardDrive,
-      tab: "databases",
+      action: () => navigate(`/domains/${domain.id}/databases`),
       color: "text-cyan-500",
       bg: "bg-cyan-500/10",
     },
@@ -151,7 +173,7 @@ export function DomainOverview() {
       title: "FTP Accounts",
       description: "FTP access management",
       icon: Upload,
-      tab: "ftp",
+      action: () => navigate(`/domains/${domain.id}/ftp`),
       color: "text-pink-500",
       bg: "bg-pink-500/10",
     },
@@ -159,7 +181,7 @@ export function DomainOverview() {
       title: "Logs",
       description: "Access & error logs",
       icon: ScrollText,
-      tab: "logs",
+      action: () => navigate(`/domains/${domain.id}/logs`),
       color: "text-gray-500",
       bg: "bg-gray-500/10",
     },
@@ -167,7 +189,7 @@ export function DomainOverview() {
       title: "Backups",
       description: "Backup & restore",
       icon: Archive,
-      tab: "backups",
+      action: () => navigate(`/domains/${domain.id}/backups`),
       color: "text-teal-500",
       bg: "bg-teal-500/10",
     },
@@ -175,11 +197,11 @@ export function DomainOverview() {
       title: "Settings",
       description: "Domain configuration",
       icon: Settings,
-      tab: "settings",
+      action: () => navigate(`/domains/${domain.id}/settings`),
       color: "text-rose-500",
       bg: "bg-rose-500/10",
     },
-  ];
+  );
 
   return (
     <div className="space-y-6">
@@ -242,9 +264,9 @@ export function DomainOverview() {
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         {featureCards.map((card) => (
           <Card
-            key={card.tab}
+            key={card.title}
             className="cursor-pointer transition-all hover:ring-2 hover:ring-pink-500/20 hover:shadow-md"
-            onClick={() => navigate(`/domains/${domain.id}/${card.tab}`)}
+            onClick={card.action}
           >
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">

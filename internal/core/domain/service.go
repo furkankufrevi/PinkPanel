@@ -14,18 +14,33 @@ var domainNameRe = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\
 
 // Domain represents a row in the domains table.
 type Domain struct {
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
 	DocumentRoot string `json:"document_root"`
-	Status       string `json:"status"`
-	PHPVersion   string `json:"php_version"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	Status      string `json:"status"`
+	PHPVersion  string `json:"php_version"`
+	ParentID    *int64 `json:"parent_id"`
+	SeparateDNS bool   `json:"separate_dns"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
 }
 
 // Service provides domain-related database operations.
 type Service struct {
 	DB *sql.DB
+}
+
+const domainColumns = "id, name, document_root, status, php_version, parent_id, separate_dns, created_at, updated_at"
+
+func scanDomain(row interface{ Scan(...interface{}) error }) (*Domain, error) {
+	d := &Domain{}
+	var separateDNS int
+	err := row.Scan(&d.ID, &d.Name, &d.DocumentRoot, &d.Status, &d.PHPVersion, &d.ParentID, &separateDNS, &d.CreatedAt, &d.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	d.SeparateDNS = separateDNS != 0
+	return d, nil
 }
 
 // List returns a paginated slice of domains with optional search and status
@@ -55,8 +70,8 @@ func (s *Service) List(search string, status string, page int, perPage int) ([]D
 	// Paginated rows.
 	offset := (page - 1) * perPage
 	listQuery := fmt.Sprintf(
-		"SELECT id, name, document_root, status, php_version, created_at, updated_at FROM domains WHERE %s ORDER BY id DESC LIMIT ? OFFSET ?",
-		clause,
+		"SELECT %s FROM domains WHERE %s ORDER BY parent_id NULLS FIRST, id DESC LIMIT ? OFFSET ?",
+		domainColumns, clause,
 	)
 	listArgs := append(args, perPage, offset)
 
@@ -68,11 +83,11 @@ func (s *Service) List(search string, status string, page int, perPage int) ([]D
 
 	var domains []Domain
 	for rows.Next() {
-		var d Domain
-		if err := rows.Scan(&d.ID, &d.Name, &d.DocumentRoot, &d.Status, &d.PHPVersion, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		d, err := scanDomain(rows)
+		if err != nil {
 			return nil, 0, fmt.Errorf("scanning domain row: %w", err)
 		}
-		domains = append(domains, d)
+		domains = append(domains, *d)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("iterating domain rows: %w", err)
@@ -83,10 +98,10 @@ func (s *Service) List(search string, status string, page int, perPage int) ([]D
 
 // GetByID returns a single domain by its primary key.
 func (s *Service) GetByID(id int64) (*Domain, error) {
-	d := &Domain{}
-	err := s.DB.QueryRow(
-		"SELECT id, name, document_root, status, php_version, created_at, updated_at FROM domains WHERE id = ?", id,
-	).Scan(&d.ID, &d.Name, &d.DocumentRoot, &d.Status, &d.PHPVersion, &d.CreatedAt, &d.UpdatedAt)
+	row := s.DB.QueryRow(
+		fmt.Sprintf("SELECT %s FROM domains WHERE id = ?", domainColumns), id,
+	)
+	d, err := scanDomain(row)
 	if err != nil {
 		return nil, fmt.Errorf("getting domain by id: %w", err)
 	}
@@ -95,21 +110,53 @@ func (s *Service) GetByID(id int64) (*Domain, error) {
 
 // GetByName returns a single domain by its unique name.
 func (s *Service) GetByName(name string) (*Domain, error) {
-	d := &Domain{}
-	err := s.DB.QueryRow(
-		"SELECT id, name, document_root, status, php_version, created_at, updated_at FROM domains WHERE name = ?", name,
-	).Scan(&d.ID, &d.Name, &d.DocumentRoot, &d.Status, &d.PHPVersion, &d.CreatedAt, &d.UpdatedAt)
+	row := s.DB.QueryRow(
+		fmt.Sprintf("SELECT %s FROM domains WHERE name = ?", domainColumns), name,
+	)
+	d, err := scanDomain(row)
 	if err != nil {
 		return nil, fmt.Errorf("getting domain by name: %w", err)
 	}
 	return d, nil
 }
 
+// GetChildren returns all subdomains (domains with parent_id = parentID).
+func (s *Service) GetChildren(parentID int64) ([]Domain, error) {
+	rows, err := s.DB.Query(
+		fmt.Sprintf("SELECT %s FROM domains WHERE parent_id = ? ORDER BY name", domainColumns), parentID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing child domains: %w", err)
+	}
+	defer rows.Close()
+
+	var domains []Domain
+	for rows.Next() {
+		d, err := scanDomain(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning child domain row: %w", err)
+		}
+		domains = append(domains, *d)
+	}
+	return domains, rows.Err()
+}
+
 // Create validates the domain name, checks for duplicates, and inserts a new
-// domain with document_root set to /var/www/{name}/public.
-func (s *Service) Create(name string, phpVersion string) (*Domain, error) {
+// domain. If parentID is non-nil, the domain is treated as a subdomain.
+func (s *Service) Create(name string, phpVersion string, parentID *int64) (*Domain, error) {
 	if !domainNameRe.MatchString(name) {
 		return nil, fmt.Errorf("invalid domain name: %s", name)
+	}
+
+	// Prevent sub-subdomains
+	if parentID != nil {
+		parent, err := s.GetByID(*parentID)
+		if err != nil {
+			return nil, fmt.Errorf("parent domain not found")
+		}
+		if parent.ParentID != nil {
+			return nil, fmt.Errorf("cannot create subdomain of a subdomain")
+		}
 	}
 
 	// Check for duplicate.
@@ -124,8 +171,8 @@ func (s *Service) Create(name string, phpVersion string) (*Domain, error) {
 	documentRoot := fmt.Sprintf("/var/www/%s/phtml", name)
 
 	result, err := s.DB.Exec(
-		"INSERT INTO domains (name, document_root, php_version) VALUES (?, ?, ?)",
-		name, documentRoot, phpVersion,
+		"INSERT INTO domains (name, document_root, php_version, parent_id, separate_dns) VALUES (?, ?, ?, ?, 0)",
+		name, documentRoot, phpVersion, parentID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("inserting domain: %w", err)
@@ -147,6 +194,22 @@ func (s *Service) Update(id int64, documentRoot string, phpVersion string) (*Dom
 	)
 	if err != nil {
 		return nil, fmt.Errorf("updating domain: %w", err)
+	}
+	return s.GetByID(id)
+}
+
+// UpdateSeparateDNS toggles the separate_dns flag for a subdomain.
+func (s *Service) UpdateSeparateDNS(id int64, separateDNS bool) (*Domain, error) {
+	val := 0
+	if separateDNS {
+		val = 1
+	}
+	_, err := s.DB.Exec(
+		"UPDATE domains SET separate_dns = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+		val, id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("updating separate_dns: %w", err)
 	}
 	return s.GetByID(id)
 }
