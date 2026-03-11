@@ -114,6 +114,13 @@ fix_bind
 # Start services
 log "Starting PinkPanel services..."
 systemctl start pinkpanel-agent
+sleep 1
+# Verify agent socket is accessible
+if [[ -S /var/run/pinkpanel/agent.sock ]]; then
+    log "Agent socket ready"
+else
+    warn "Agent socket not found — check: journalctl -u pinkpanel-agent -n 20"
+fi
 systemctl start pinkpanel
 
 # Cleanup

@@ -56,6 +56,11 @@ func (s *Server) Start() error {
 		return fmt.Errorf("listening on socket: %w", err)
 	}
 
+	// Allow non-root processes (pinkpanel user) to connect to the socket
+	if err := os.Chmod(s.socketPath, 0666); err != nil {
+		return fmt.Errorf("setting socket permissions: %w", err)
+	}
+
 	s.mu.Lock()
 	s.listener = listener
 	s.mu.Unlock()

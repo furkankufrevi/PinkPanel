@@ -353,6 +353,7 @@ setup_firewall() {
 
 start_pinkpanel() {
     systemctl enable --now pinkpanel-agent 2>/dev/null
+    sleep 1
     systemctl enable --now pinkpanel 2>/dev/null
     log "PinkPanel started"
 }
