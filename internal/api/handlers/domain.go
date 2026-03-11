@@ -138,16 +138,6 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 		})
 	}
 
-	// If create_www is true, adjust document root to use public_html
-	docRoot := d.DocumentRoot
-	if req.CreateWWW {
-		docRoot = fmt.Sprintf("/var/www/%s/public_html", d.Name)
-		d, err = h.DomainSvc.Update(d.ID, docRoot, d.PHPVersion)
-		if err != nil {
-			log.Printf("WARNING: failed to update document root for %s: %v", d.Name, err)
-		}
-	}
-
 	// Create document root directory via agent
 	_, err = h.AgentClient.Call("dir_create", map[string]interface{}{
 		"path":  d.DocumentRoot,

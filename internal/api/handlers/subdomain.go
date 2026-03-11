@@ -71,14 +71,26 @@ func (h *SubdomainHandler) Create(c *fiber.Ctx) error {
 
 	// Create document root via agent
 	if _, err := h.AgentClient.Call("dir_create", map[string]any{
-		"path": sub.DocumentRoot,
-		"mode": "0755",
+		"path":  sub.DocumentRoot,
+		"owner": "www-data",
+		"group": "www-data",
 	}); err != nil {
 		log.Error().Err(err).Msg("failed to create subdomain document root")
 	}
 
-	// Generate NGINX vhost for the subdomain
+	// Create default welcome page
 	fqdn := fmt.Sprintf("%s.%s", req.Name, dom.Name)
+	indexPath := fmt.Sprintf("%s/index.html", sub.DocumentRoot)
+	indexContent := tmpl.DefaultIndexPage(fqdn)
+	if _, err := h.AgentClient.Call("file_write", map[string]any{
+		"path":    indexPath,
+		"content": indexContent,
+		"mode":    "0644",
+	}); err != nil {
+		log.Error().Err(err).Msg("failed to create subdomain default index page")
+	}
+
+	// Generate NGINX vhost for the subdomain
 	vhostConfig, err := tmpl.RenderNginxVhost(tmpl.NginxVhostData{
 		Domain:       fqdn,
 		DocumentRoot: sub.DocumentRoot,
