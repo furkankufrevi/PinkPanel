@@ -81,9 +81,9 @@ func (h *PHPHandler) UpdateDomainPHP(c *fiber.Ctx) error {
 	if err != nil {
 		log.Error().Err(err).Msg("failed to render PHP pool config")
 	} else {
-		poolPath := fmt.Sprintf("/etc/php/%s/fpm/pool.d/%s.conf", req.Version, dom.Name)
 		if _, err := h.AgentClient.Call("php_write_pool", map[string]any{
-			"path":    poolPath,
+			"version": req.Version,
+			"domain":  dom.Name,
 			"content": poolContent,
 		}); err != nil {
 			log.Error().Err(err).Msg("failed to write PHP pool config via agent")

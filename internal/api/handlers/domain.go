@@ -12,6 +12,7 @@ import (
 	"github.com/pinkpanel/pinkpanel/internal/agent"
 	"github.com/pinkpanel/pinkpanel/internal/core/dns"
 	"github.com/pinkpanel/pinkpanel/internal/core/domain"
+	"github.com/pinkpanel/pinkpanel/internal/core/php"
 	"github.com/pinkpanel/pinkpanel/internal/core/subdomain"
 	"github.com/pinkpanel/pinkpanel/internal/db"
 	tmpl "github.com/pinkpanel/pinkpanel/internal/template"
@@ -166,6 +167,34 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 		"mode":    "0644",
 	}); err != nil {
 		log.Printf("WARNING: failed to create default index page for %s: %v", d.Name, err)
+	}
+
+	// Create PHP-FPM pool for this domain
+	poolConfig := php.DefaultPoolConfig(d.Name, d.PHPVersion, nil)
+	poolContent, err := tmpl.RenderPHPPool(tmpl.PHPPoolData{
+		Domain:       poolConfig.Domain,
+		User:         poolConfig.User,
+		Group:        poolConfig.Group,
+		ListenSocket: poolConfig.ListenSocket,
+		PHPVersion:   poolConfig.PHPVersion,
+		Settings:     poolConfig.Settings,
+	})
+	if err != nil {
+		log.Printf("WARNING: failed to render PHP pool for %s: %v", d.Name, err)
+	} else {
+		if _, err := h.AgentClient.Call("php_write_pool", map[string]interface{}{
+			"version": d.PHPVersion,
+			"domain":  d.Name,
+			"content": poolContent,
+		}); err != nil {
+			log.Printf("WARNING: failed to write PHP pool for %s: %v", d.Name, err)
+		} else {
+			if _, err := h.AgentClient.Call("php_reload", map[string]interface{}{
+				"version": d.PHPVersion,
+			}); err != nil {
+				log.Printf("WARNING: failed to reload PHP-FPM after creating pool for %s: %v", d.Name, err)
+			}
+		}
 	}
 
 	// Create default DNS records (do this before NGINX so it always happens)
@@ -529,6 +558,14 @@ func (h *DomainHandler) Delete(c *fiber.Ctx) error {
 				"message": "Failed to delete domain",
 			},
 		})
+	}
+
+	// Remove PHP-FPM pool
+	poolPath := fmt.Sprintf("/etc/php/%s/fpm/pool.d/%s.conf", d.PHPVersion, d.Name)
+	if _, err := h.AgentClient.Call("file_delete", map[string]interface{}{"path": poolPath}); err != nil {
+		log.Printf("WARNING: failed to delete PHP pool for %s: %v", d.Name, err)
+	} else {
+		h.AgentClient.Call("php_reload", map[string]interface{}{"version": d.PHPVersion})
 	}
 
 	// Remove NGINX config files
