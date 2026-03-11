@@ -59,7 +59,7 @@ func (s *Service) Create(domainID int64, name, domainName string) (*Subdomain, e
 		return nil, fmt.Errorf("subdomain name must be 1-63 characters")
 	}
 
-	documentRoot := fmt.Sprintf("/var/www/%s.%s/public_html", name, domainName)
+	documentRoot := fmt.Sprintf("/var/www/%s.%s/phtml", name, domainName)
 
 	res, err := s.DB.Exec(
 		`INSERT INTO subdomains (domain_id, name, document_root) VALUES (?, ?, ?)`,

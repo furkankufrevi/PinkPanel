@@ -121,7 +121,7 @@ func (s *Service) Create(name string, phpVersion string) (*Domain, error) {
 		return nil, fmt.Errorf("domain already exists: %s", name)
 	}
 
-	documentRoot := fmt.Sprintf("/var/www/%s/public_html", name)
+	documentRoot := fmt.Sprintf("/var/www/%s/phtml", name)
 
 	result, err := s.DB.Exec(
 		"INSERT INTO domains (name, document_root, php_version) VALUES (?, ?, ?)",
