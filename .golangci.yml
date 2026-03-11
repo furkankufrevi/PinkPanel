@@ -1,0 +1,25 @@
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - gosec
+    - gocritic
+
+linters-settings:
+  govet:
+    shadow: true
+  gosec:
+    severity: medium
+    confidence: medium
+
+issues:
+  exclude-dirs:
+    - vendor
+    - web
+    - node_modules
+  max-issues-per-linter: 50
+  max-same-issues: 10
+
+run:
+  timeout: 5m

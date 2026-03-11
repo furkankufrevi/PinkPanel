@@ -1,0 +1,10 @@
+INSERT OR IGNORE INTO settings (key, value) VALUES ('panel.hostname', '');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('panel.port', '8443');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('panel.timezone', 'UTC');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('admin.email', '');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('nginx.worker_processes', 'auto');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('php.default_version', '8.3');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('backup.retention_days', '30');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('backup.storage_path', '/usr/local/pinkpanel/data/backups');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('log.retention_days', '90');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('log.level', 'info');

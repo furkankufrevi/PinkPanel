@@ -1,0 +1,118 @@
+# ──────────────────────────────────────────────
+# Go
+# ──────────────────────────────────────────────
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# Root-level compiled binaries (dev build artifacts)
+/server
+/agent
+/cli
+/pinkpanel
+/pinkpanel-agent
+/pinkpanel-cli
+
+# ──────────────────────────────────────────────
+# Air (Go live reload)
+# ──────────────────────────────────────────────
+tmp/
+.air/
+
+# ──────────────────────────────────────────────
+# Frontend
+# ──────────────────────────────────────────────
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Embedded static dir (built from web/dist → copied here during make build)
+cmd/server/static/
+
+# ──────────────────────────────────────────────
+# Database
+# ──────────────────────────────────────────────
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# ──────────────────────────────────────────────
+# Secrets & credentials
+# ──────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.cert
+*.crt
+*.p12
+*.pfx
+.agent-secret
+.jwt-secret
+mysql.cnf
+
+# ──────────────────────────────────────────────
+# Config (local overrides — template is committed)
+# ──────────────────────────────────────────────
+/pinkpanel.yml
+/pinkpanel.yaml
+
+# ──────────────────────────────────────────────
+# Logs
+# ──────────────────────────────────────────────
+*.log
+logs/
+
+# ──────────────────────────────────────────────
+# IDE & editors
+# ──────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+*~
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+# ──────────────────────────────────────────────
+# OS
+# ──────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ──────────────────────────────────────────────
+# Test & coverage
+# ──────────────────────────────────────────────
+coverage/
+coverage.out
+coverage.html
+*.cover
+*.prof
+__debug_bin*
+
+# ──────────────────────────────────────────────
+# Misc
+# ──────────────────────────────────────────────
+*.bak
+*.tmp
+*.temp
+*.orig
+*.rej
+*.patch
