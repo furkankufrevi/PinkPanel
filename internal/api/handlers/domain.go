@@ -155,6 +155,15 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 		log.Printf("WARNING: failed to create document root for %s: %v", d.Name, err)
 	}
 
+	// Create default DNS records (do this before NGINX so it always happens)
+	serverIP := getServerIP()
+	if err := h.DNSSvc.CreateDefaultRecords(d.ID, d.Name, serverIP); err != nil {
+		log.Printf("WARNING: failed to create default DNS records for %s: %v", d.Name, err)
+	} else {
+		// Generate zone file and register in BIND
+		provisionDNSZone(h.DNSSvc, h.AgentClient, d.ID, d.Name)
+	}
+
 	// Render NGINX vhost configuration
 	vhostContent, err := tmpl.RenderNginxVhost(tmpl.NginxVhostData{
 		Domain:       d.Name,
@@ -163,51 +172,38 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 	})
 	if err != nil {
 		log.Printf("WARNING: failed to render vhost for %s: %v", d.Name, err)
-		return c.Status(fiber.StatusCreated).JSON(d)
-	}
-
-	// Write vhost to sites-available
-	configPath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", d.Name)
-	_, err = h.AgentClient.Call("file_write", map[string]interface{}{
-		"path":    configPath,
-		"content": vhostContent,
-		"mode":    "0644",
-	})
-	if err != nil {
-		log.Printf("WARNING: failed to write vhost config for %s: %v", d.Name, err)
-		return c.Status(fiber.StatusCreated).JSON(d)
-	}
-
-	// Write vhost to sites-enabled
-	enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", d.Name)
-	_, err = h.AgentClient.Call("file_write", map[string]interface{}{
-		"path":    enabledPath,
-		"content": vhostContent,
-		"mode":    "0644",
-	})
-	if err != nil {
-		log.Printf("WARNING: failed to write sites-enabled config for %s: %v", d.Name, err)
-	}
-
-	// Test NGINX configuration
-	_, err = h.AgentClient.Call("nginx_test", nil)
-	if err != nil {
-		log.Printf("WARNING: nginx config test failed after creating %s: %v", d.Name, err)
-	}
-
-	// Reload NGINX
-	_, err = h.AgentClient.Call("nginx_reload", nil)
-	if err != nil {
-		log.Printf("ERROR: nginx reload failed after creating %s: %v", d.Name, err)
-	}
-
-	// Create default DNS records
-	serverIP := getServerIP()
-	if err := h.DNSSvc.CreateDefaultRecords(d.ID, d.Name, serverIP); err != nil {
-		log.Printf("WARNING: failed to create default DNS records for %s: %v", d.Name, err)
 	} else {
-		// Generate zone file and register in BIND
-		provisionDNSZone(h.DNSSvc, h.AgentClient, d.ID, d.Name)
+		// Write vhost to sites-available
+		configPath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", d.Name)
+		_, err = h.AgentClient.Call("file_write", map[string]interface{}{
+			"path":    configPath,
+			"content": vhostContent,
+			"mode":    "0644",
+		})
+		if err != nil {
+			log.Printf("WARNING: failed to write vhost config for %s: %v", d.Name, err)
+		}
+
+		// Write vhost to sites-enabled
+		enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", d.Name)
+		_, err = h.AgentClient.Call("file_write", map[string]interface{}{
+			"path":    enabledPath,
+			"content": vhostContent,
+			"mode":    "0644",
+		})
+		if err != nil {
+			log.Printf("WARNING: failed to write sites-enabled config for %s: %v", d.Name, err)
+		}
+
+		// Test and reload NGINX
+		_, err = h.AgentClient.Call("nginx_test", nil)
+		if err != nil {
+			log.Printf("WARNING: nginx config test failed after creating %s: %v", d.Name, err)
+		}
+		_, err = h.AgentClient.Call("nginx_reload", nil)
+		if err != nil {
+			log.Printf("ERROR: nginx reload failed after creating %s: %v", d.Name, err)
+		}
 	}
 
 	// Log activity (non-critical)
