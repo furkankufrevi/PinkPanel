@@ -144,6 +144,10 @@ setup_system() {
     mkdir -p "$PINKPANEL_HOME/bin" "$PINKPANEL_DATA" "$PINKPANEL_LOG" \
              /var/run/pinkpanel /var/backups/pinkpanel /var/www /etc/pinkpanel
 
+    # Stop existing services before replacing binaries (avoids "Text file busy")
+    systemctl stop pinkpanel 2>/dev/null || true
+    systemctl stop pinkpanel-agent 2>/dev/null || true
+
     # Install binaries
     cp "$BUILD_DIR/dist/pinkpanel"       "$PINKPANEL_HOME/bin/"
     cp "$BUILD_DIR/dist/pinkpanel-agent" "$PINKPANEL_HOME/bin/"
