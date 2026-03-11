@@ -12,16 +12,18 @@ import (
 	"github.com/pinkpanel/pinkpanel/internal/agent"
 	"github.com/pinkpanel/pinkpanel/internal/core/dns"
 	"github.com/pinkpanel/pinkpanel/internal/core/domain"
+	"github.com/pinkpanel/pinkpanel/internal/core/subdomain"
 	"github.com/pinkpanel/pinkpanel/internal/db"
 	tmpl "github.com/pinkpanel/pinkpanel/internal/template"
 )
 
 // DomainHandler handles domain CRUD and lifecycle operations.
 type DomainHandler struct {
-	DB          *sql.DB
-	DomainSvc   *domain.Service
-	DNSSvc      *dns.Service
-	AgentClient *agent.Client
+	DB           *sql.DB
+	DomainSvc    *domain.Service
+	DNSSvc       *dns.Service
+	SubdomainSvc *subdomain.Service
+	AgentClient  *agent.Client
 }
 
 type createDomainRequest struct {
@@ -509,7 +511,17 @@ func (h *DomainHandler) Delete(c *fiber.Ctx) error {
 		})
 	}
 
-	// Delete from DB
+	// Clean up subdomain NGINX configs before DB cascade deletes the rows
+	if h.SubdomainSvc != nil {
+		subs, _ := h.SubdomainSvc.List(id)
+		for _, sub := range subs {
+			fqdn := fmt.Sprintf("%s.%s", sub.Name, d.Name)
+			h.AgentClient.Call("file_delete", map[string]interface{}{"path": fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", fqdn)})
+			h.AgentClient.Call("file_delete", map[string]interface{}{"path": fmt.Sprintf("/etc/nginx/sites-available/%s.conf", fqdn)})
+		}
+	}
+
+	// Delete from DB (cascades to subdomains, dns_records)
 	if err := h.DomainSvc.Delete(id); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": fiber.Map{

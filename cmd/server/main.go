@@ -128,11 +128,13 @@ func main() {
 	// Domain service & handler
 	domainSvc := &domain.Service{DB: database}
 	dnsSvc := &dns.Service{DB: database}
+	subdomainSvc := &subdomain.Service{DB: database}
 	domainHandler := &handlers.DomainHandler{
-		DB:          database,
-		DomainSvc:   domainSvc,
-		DNSSvc:      dnsSvc,
-		AgentClient: agentClient,
+		DB:           database,
+		DomainSvc:    domainSvc,
+		DNSSvc:       dnsSvc,
+		SubdomainSvc: subdomainSvc,
+		AgentClient:  agentClient,
 	}
 
 	// DNS handler
@@ -195,8 +197,7 @@ func main() {
 		AgentClient: agentClient,
 	}
 
-	// Subdomain service & handler
-	subdomainSvc := &subdomain.Service{DB: database}
+	// Subdomain handler
 	subdomainHandler := &handlers.SubdomainHandler{
 		DB:           database,
 		SubdomainSvc: subdomainSvc,
