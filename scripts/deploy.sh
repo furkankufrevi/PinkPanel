@@ -281,11 +281,39 @@ CNF
     fi
 }
 
+# ── BIND config repair helper ────────────────
+
+repair_named_conf_local() {
+    local conf="/etc/bind/named.conf.local"
+    [[ -f "$conf" ]] || return
+    local tmp_conf
+    tmp_conf=$(mktemp)
+    local in_zone=0
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^zone[[:space:]] ]]; then
+            in_zone=1
+            echo "$line" >> "$tmp_conf"
+        elif (( in_zone )); then
+            echo "$line" >> "$tmp_conf"
+            if [[ "$line" =~ ^\}\; ]]; then
+                in_zone=0
+            fi
+        elif [[ "$line" =~ ^[[:space:]]*\}\;[[:space:]]*$ ]]; then
+            warn "Removed stray '};' from named.conf.local"
+        else
+            echo "$line" >> "$tmp_conf"
+        fi
+    done < "$conf"
+    cp "$tmp_conf" "$conf"
+    rm -f "$tmp_conf"
+    chown bind:bind "$conf" 2>/dev/null || true
+}
+
 # ── Configure BIND9 ──────────────────────────
 
 setup_bind() {
     mkdir -p /etc/bind/zones
-    chown bind:bind /etc/bind/zones
+    chown bind:bind /etc/bind/zones 2>/dev/null || true
 
     cat > /etc/bind/named.conf.options <<'BINDOPTS'
 options {
@@ -300,15 +328,17 @@ options {
 };
 BINDOPTS
 
-    # Ensure named.conf.local exists for zone entries
+    # Ensure named.conf.local exists and is clean
     if [[ ! -f /etc/bind/named.conf.local ]]; then
         echo "// PinkPanel managed zones" > /etc/bind/named.conf.local
+    else
+        repair_named_conf_local
     fi
 
     # Generate rndc key if missing (needed for rndc reconfig/reload)
     if [[ ! -f /etc/bind/rndc.key ]]; then
-        rndc-confgen -a -b 256 > /dev/null 2>&1
-        chown bind:bind /etc/bind/rndc.key
+        rndc-confgen -a -b 256 > /dev/null 2>&1 || true
+        chown bind:bind /etc/bind/rndc.key 2>/dev/null || true
     fi
 
     # Ensure main named.conf includes named.conf.local
@@ -316,9 +346,17 @@ BINDOPTS
         echo 'include "/etc/bind/named.conf.local";' >> /etc/bind/named.conf
     fi
 
-    # Test BIND configuration
+    # Fix ownership
+    chown bind:bind /etc/bind/named.conf.local 2>/dev/null || true
+    chown -R bind:bind /etc/bind/zones/ 2>/dev/null || true
+
+    # Validate config before starting
     if command -v named-checkconf &>/dev/null; then
-        named-checkconf > /dev/null 2>&1 || warn "BIND config check failed — review /etc/bind/"
+        if named-checkconf > /dev/null 2>&1; then
+            log "BIND config check passed"
+        else
+            warn "BIND config check failed — review /etc/bind/"
+        fi
     fi
 
     log "BIND9 configured (authoritative only, rndc enabled)"
@@ -328,7 +366,15 @@ BINDOPTS
 
 enable_services() {
     systemctl enable --now nginx > /dev/null 2>&1
-    systemctl enable --now named > /dev/null 2>&1 || systemctl enable --now bind9 > /dev/null 2>&1 || true
+    # Reset failed state in case BIND crashed previously
+    systemctl reset-failed named 2>/dev/null || systemctl reset-failed bind9 2>/dev/null || true
+    systemctl enable named > /dev/null 2>&1 || systemctl enable bind9 > /dev/null 2>&1 || true
+    systemctl restart named 2>/dev/null || systemctl restart bind9 2>/dev/null || true
+    if systemctl is-active --quiet named 2>/dev/null || systemctl is-active --quiet bind9 2>/dev/null; then
+        log "BIND9 running"
+    else
+        warn "BIND9 failed to start — check: journalctl -u named -n 20"
+    fi
     systemctl enable --now vsftpd > /dev/null 2>&1
     systemctl enable --now php8.3-fpm > /dev/null 2>&1
     log "Services enabled"

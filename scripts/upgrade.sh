@@ -164,8 +164,17 @@ BINDOPTS
         fi
     fi
 
+    # Reset failed state (BIND may have crashed previously and given up retrying)
+    systemctl reset-failed named 2>/dev/null || systemctl reset-failed bind9 2>/dev/null || true
+
     # Restart BIND
     systemctl restart named 2>/dev/null || systemctl restart bind9 2>/dev/null || true
+
+    if systemctl is-active --quiet named 2>/dev/null || systemctl is-active --quiet bind9 2>/dev/null; then
+        log "BIND9 running"
+    else
+        warn "BIND9 failed to start — check: journalctl -u named -n 20"
+    fi
 
     log "BIND9 configuration updated"
 }

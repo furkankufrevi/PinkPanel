@@ -165,10 +165,28 @@ fi
 if [[ "$REMOVE_DNS" == "yes" ]]; then
     log "Removing DNS zone files..."
     rm -rf /etc/bind/zones/*
-    # Remove PinkPanel zone blocks from named.conf.local
+    # Remove all zone blocks from named.conf.local, keeping comments
     if [[ -f /etc/bind/named.conf.local ]]; then
-        sed -i '/^zone "/,/^};$/d' /etc/bind/named.conf.local
+        local tmp_conf
+        tmp_conf=$(mktemp)
+        local in_zone=0
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^zone[[:space:]] ]]; then
+                in_zone=1
+            elif (( in_zone )); then
+                # Look for closing "};" at start of line (end of zone block)
+                if [[ "$line" =~ ^\}\; ]]; then
+                    in_zone=0
+                fi
+            else
+                echo "$line" >> "$tmp_conf"
+            fi
+        done < /etc/bind/named.conf.local
+        cp "$tmp_conf" /etc/bind/named.conf.local
+        rm -f "$tmp_conf"
+        chown bind:bind /etc/bind/named.conf.local 2>/dev/null || true
     fi
+    systemctl reset-failed named 2>/dev/null || true
     rndc reconfig 2>/dev/null || systemctl reload named 2>/dev/null || systemctl reload bind9 2>/dev/null || true
     log "DNS zones removed"
 else
