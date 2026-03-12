@@ -92,14 +92,16 @@ function ServerInfoCard() {
               <Cpu className="h-3 w-3" />
               CPU
             </p>
-            <p className="text-sm font-medium">{sys.cpu_usage.toFixed(1)}%</p>
+            <p className="text-sm font-medium">{(sys.cpu_usage ?? 0).toFixed(1)}%</p>
           </div>
           <div className="space-y-1">
             <p className="text-xs text-muted-foreground flex items-center gap-1">
               <MemoryStick className="h-3 w-3" />
               Memory
             </p>
-            <p className="text-sm font-medium">{sys.ram.percent.toFixed(1)}%</p>
+            <p className="text-sm font-medium">
+              {sys.ram?.total ? ((sys.ram.used / sys.ram.total) * 100).toFixed(1) : "0.0"}%
+            </p>
           </div>
           {sys.disk?.[0] && (
             <div className="space-y-1">
@@ -108,7 +110,7 @@ function ServerInfoCard() {
                 Disk
               </p>
               <p className="text-sm font-medium">
-                {sys.disk[0].percent.toFixed(1)}%
+                {sys.disk[0].use_percent ?? "0%"}
               </p>
             </div>
           )}
