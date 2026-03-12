@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { listFiles } from "@/api/files";
+import { routedListFiles } from "@/api/files";
 import { FileTreeNode } from "./file-tree-node";
 import type { FileEntry } from "@/types/files";
 import { Loader2 } from "lucide-react";
@@ -13,8 +13,7 @@ interface FileTreeProps {
 export function FileTree({ domainId, basePath, onContextMenu }: FileTreeProps) {
   const { data, isLoading } = useQuery({
     queryKey: ["files", domainId, basePath],
-    queryFn: () => listFiles(domainId, basePath),
-    enabled: !!domainId,
+    queryFn: () => routedListFiles(domainId, basePath),
   });
 
   if (isLoading) {

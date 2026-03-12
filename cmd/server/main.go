@@ -298,6 +298,23 @@ func main() {
 	protected.Post("/domains/:id/files/compress", fileHandler.Compress)
 	protected.Get("/domains/:id/files/search", fileHandler.Search)
 
+	// Global file manager routes (all websites, rooted at /var/www)
+	globalFileHandler := &handlers.GlobalFileHandler{
+		DB:          database,
+		AgentClient: agentClient,
+	}
+	protected.Get("/files", globalFileHandler.List)
+	protected.Get("/files/read", globalFileHandler.Read)
+	protected.Post("/files/save", globalFileHandler.Save)
+	protected.Post("/files/delete", globalFileHandler.Delete)
+	protected.Post("/files/rename", globalFileHandler.Rename)
+	protected.Post("/files/mkdir", globalFileHandler.CreateDirectory)
+	protected.Post("/files/extract", globalFileHandler.Extract)
+	protected.Post("/files/upload", globalFileHandler.Upload)
+	protected.Get("/files/download", globalFileHandler.Download)
+	protected.Post("/files/compress", globalFileHandler.Compress)
+	protected.Get("/files/search", globalFileHandler.Search)
+
 	// Serve embedded frontend
 	distFS, err := fs.Sub(embeddedFiles, "static")
 	if err != nil {

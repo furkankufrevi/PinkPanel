@@ -14,15 +14,15 @@ import {
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { toast } from "sonner";
 import {
-  listFiles,
-  saveFile,
-  deleteFile,
-  renameFile,
-  createDirectory,
-  uploadFiles,
-  downloadFile,
-  compressFiles,
-  extractArchive,
+  routedListFiles,
+  routedSaveFile,
+  routedDeleteFile,
+  routedRenameFile,
+  routedCreateDirectory,
+  routedUploadFiles,
+  routedDownloadFile,
+  routedCompressFiles,
+  routedExtractArchive,
 } from "@/api/files";
 import { useFileManager } from "@/stores/file-manager";
 import {
@@ -42,9 +42,13 @@ import type { AxiosError } from "axios";
 import type { APIError } from "@/types/api";
 import { Loader2 } from "lucide-react";
 
-export function DomainFiles() {
+interface DomainFilesProps {
+  domainId?: number;
+}
+
+export function DomainFiles({ domainId: propDomainId }: DomainFilesProps = {}) {
   const { id } = useParams<{ id: string }>();
-  const domainId = Number(id);
+  const domainId = propDomainId ?? Number(id);
   const queryClient = useQueryClient();
 
   const store = useFileManager();
@@ -82,8 +86,7 @@ export function DomainFiles() {
   // Get base path from initial query
   const { data: rootData } = useQuery({
     queryKey: ["files", domainId, undefined],
-    queryFn: () => listFiles(domainId, undefined),
-    enabled: !!domainId,
+    queryFn: () => routedListFiles(domainId, undefined),
   });
   const basePath = rootData?.base;
 
@@ -93,7 +96,7 @@ export function DomainFiles() {
   // Save mutation
   const saveMutation = useMutation({
     mutationFn: ({ path, content }: { path: string; content: string }) =>
-      saveFile(domainId, path, content),
+      routedSaveFile(domainId, path, content),
     onSuccess: (_, { path }) => {
       markSaved(path);
       toast.success("File saved");
@@ -106,7 +109,7 @@ export function DomainFiles() {
 
   // Create file mutation
   const createFileMutation = useMutation({
-    mutationFn: (fullPath: string) => saveFile(domainId, fullPath, ""),
+    mutationFn: (fullPath: string) => routedSaveFile(domainId, fullPath, ""),
     onSuccess: () => {
       toast.success("File created");
       setShowNewFile(false);
@@ -120,7 +123,7 @@ export function DomainFiles() {
 
   // Create directory mutation
   const createDirMutation = useMutation({
-    mutationFn: (fullPath: string) => createDirectory(domainId, fullPath),
+    mutationFn: (fullPath: string) => routedCreateDirectory(domainId, fullPath),
     onSuccess: () => {
       toast.success("Directory created");
       setShowNewDir(false);
@@ -135,7 +138,7 @@ export function DomainFiles() {
   // Rename mutation
   const renameMutation = useMutation({
     mutationFn: ({ oldPath, newPath }: { oldPath: string; newPath: string }) =>
-      renameFile(domainId, oldPath, newPath),
+      routedRenameFile(domainId, oldPath, newPath),
     onSuccess: () => {
       toast.success("Renamed successfully");
       setShowRename(null);
@@ -150,7 +153,7 @@ export function DomainFiles() {
   // Delete mutation
   const deleteMutation = useMutation({
     mutationFn: ({ path, recursive }: { path: string; recursive: boolean }) =>
-      deleteFile(domainId, path, recursive),
+      routedDeleteFile(domainId, path, recursive),
     onSuccess: () => {
       toast.success("Deleted successfully");
       setShowDelete(null);
@@ -171,7 +174,7 @@ export function DomainFiles() {
       sources: string[];
       output: string;
       format: string;
-    }) => compressFiles(domainId, sources, output, format),
+    }) => routedCompressFiles(domainId, sources, output, format),
     onSuccess: () => {
       toast.success("Archive created");
       setShowCompress(null);
@@ -185,7 +188,7 @@ export function DomainFiles() {
   // Extract mutation
   const extractMutation = useMutation({
     mutationFn: ({ archive, dest }: { archive: string; dest: string }) =>
-      extractArchive(domainId, archive, dest),
+      routedExtractArchive(domainId, archive, dest),
     onSuccess: () => {
       toast.success("Extracted successfully");
       queryClient.invalidateQueries({ queryKey: ["files", domainId] });
@@ -208,7 +211,7 @@ export function DomainFiles() {
       if (!destDir) return;
       store.setUploading(true, 0);
       try {
-        await uploadFiles(domainId, destDir, files, (progress) => {
+        await routedUploadFiles(domainId, destDir, files, (progress) => {
           store.setUploading(true, progress);
         });
         toast.success(`Uploaded ${files.length} file(s)`);
@@ -438,7 +441,7 @@ export function DomainFiles() {
             toast.success("Path copied");
           }}
           onDownload={() => {
-            downloadFile(domainId, contextMenu.entry.path).catch(() => {
+            routedDownloadFile(domainId, contextMenu.entry.path).catch(() => {
               toast.error("Download failed");
             });
           }}

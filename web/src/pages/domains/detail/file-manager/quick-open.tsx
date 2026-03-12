@@ -6,7 +6,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { searchFiles, readFile } from "@/api/files";
+import { routedSearchFiles, routedReadFile } from "@/api/files";
 import { useFileManager } from "@/stores/file-manager";
 import type { SearchResult } from "@/types/files";
 import { FileCode, Search, Loader2 } from "lucide-react";
@@ -42,7 +42,7 @@ export function QuickOpen({ open, onOpenChange, domainId, basePath }: QuickOpenP
       }
       setIsSearching(true);
       try {
-        const res = await searchFiles(domainId, q, basePath);
+        const res = await routedSearchFiles(domainId, q, basePath);
         setResults(res);
         setSelectedIndex(0);
       } catch {
@@ -66,7 +66,7 @@ export function QuickOpen({ open, onOpenChange, domainId, basePath }: QuickOpenP
     setTabLoading(result.path, true);
     onOpenChange(false);
     try {
-      const data = await readFile(domainId, result.path);
+      const data = await routedReadFile(domainId, result.path);
       const store = useFileManager.getState();
       const tabs = store.openTabs.map((t) =>
         t.path === result.path

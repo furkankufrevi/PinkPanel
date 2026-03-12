@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { listFiles, readFile } from "@/api/files";
+import { routedListFiles, routedReadFile } from "@/api/files";
 import { useFileManager } from "@/stores/file-manager";
 import type { FileEntry } from "@/types/files";
 import {
@@ -46,7 +46,7 @@ export function FileTreeNode({ entry, domainId, depth, onContextMenu }: FileTree
 
   const { data: children } = useQuery({
     queryKey: ["files", domainId, entry.path],
-    queryFn: () => listFiles(domainId, entry.path),
+    queryFn: () => routedListFiles(domainId, entry.path),
     enabled: entry.is_dir && isExpanded,
   });
 
@@ -65,7 +65,7 @@ export function FileTreeNode({ entry, domainId, depth, onContextMenu }: FileTree
       openFile(entry.path, entry.name);
       setTabLoading(entry.path, true);
       try {
-        const result = await readFile(domainId, entry.path);
+        const result = await routedReadFile(domainId, entry.path);
         // Update the tab content
         const store = useFileManager.getState();
         const tabs = store.openTabs.map((t) =>
