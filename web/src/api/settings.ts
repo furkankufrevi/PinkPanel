@@ -19,8 +19,8 @@ export interface ServerInfo {
     arch: string;
     hostname: string;
     cpu_usage: number;
-    ram: { total: number; used: number; free: number; percent: number };
-    disk: { mount: string; total: number; used: number; free: number; percent: number }[];
+    ram: { total: number; used: number; free: number };
+    disk: { mount: string; filesystem: string; total: string; used: string; available: string; use_percent: string }[];
     uptime: string;
     load_avg: string;
   };
