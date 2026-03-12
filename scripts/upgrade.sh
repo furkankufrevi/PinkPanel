@@ -151,33 +151,36 @@ log "Build complete"
 NEW_VERSION=$("$BUILD_DIR/dist/pinkpanel-cli" version 2>/dev/null | awk '{print $2}' || echo "unknown")
 log "New version: $NEW_VERSION"
 
-# Check if already up to date
+# Install new binaries (even if same version — scripts/config may have changed)
+SKIP_BINARY=false
 if [[ "$CURRENT" == "$NEW_VERSION" ]]; then
-    warn "Already running $CURRENT — no upgrade needed"
-    rm -rf "$BUILD_DIR"
-    # Ensure services are running (in case a previous upgrade left them stopped)
-    systemctl start pinkpanel-agent 2>/dev/null || true
-    sleep 1
-    systemctl start pinkpanel 2>/dev/null || true
-    exit 0
+    log "Already running $CURRENT — updating config only"
+    SKIP_BINARY=true
 fi
 
-# Stop services
-log "Stopping PinkPanel services..."
-systemctl stop pinkpanel 2>/dev/null || true
-systemctl stop pinkpanel-agent 2>/dev/null || true
+if [[ "$SKIP_BINARY" == false ]]; then
+    # Stop services
+    log "Stopping PinkPanel services..."
+    systemctl stop pinkpanel 2>/dev/null || true
+    systemctl stop pinkpanel-agent 2>/dev/null || true
 
-# Backup old binaries
-if [[ -d "$PINKPANEL_HOME/bin" ]]; then
-    cp -a "$PINKPANEL_HOME/bin" "$PINKPANEL_HOME/bin.bak.$(date +%Y%m%d%H%M%S)"
+    # Backup old binaries
+    if [[ -d "$PINKPANEL_HOME/bin" ]]; then
+        cp -a "$PINKPANEL_HOME/bin" "$PINKPANEL_HOME/bin.bak.$(date +%Y%m%d%H%M%S)"
+    fi
+
+    # Install new binaries
+    log "Installing new binaries..."
+    cp "$BUILD_DIR/dist/pinkpanel"       "$PINKPANEL_HOME/bin/"
+    cp "$BUILD_DIR/dist/pinkpanel-agent" "$PINKPANEL_HOME/bin/"
+    cp "$BUILD_DIR/dist/pinkpanel-cli"   "$PINKPANEL_HOME/bin/"
+    chmod +x "$PINKPANEL_HOME/bin/"*
+else
+    # Stop services briefly for config updates
+    log "Stopping PinkPanel services..."
+    systemctl stop pinkpanel 2>/dev/null || true
+    systemctl stop pinkpanel-agent 2>/dev/null || true
 fi
-
-# Install new binaries
-log "Installing new binaries..."
-cp "$BUILD_DIR/dist/pinkpanel"       "$PINKPANEL_HOME/bin/"
-cp "$BUILD_DIR/dist/pinkpanel-agent" "$PINKPANEL_HOME/bin/"
-cp "$BUILD_DIR/dist/pinkpanel-cli"   "$PINKPANEL_HOME/bin/"
-chmod +x "$PINKPANEL_HOME/bin/"*
 
 # ── Ensure MySQL root uses unix_socket auth ──
 fix_mysql_auth() {
@@ -445,13 +448,16 @@ BINDOPTS
     log "BIND9 configuration updated"
 }
 
+# ── Always-run fixups (run even when version matches) ──
 install_missing_packages
 fix_bind
 fix_mysql_auth
 setup_phpmyadmin
 
 # ── Run version-specific migrations ────────
-run_migrations "$CURRENT"
+if [[ "$SKIP_BINARY" == false ]]; then
+    run_migrations "$CURRENT"
+fi
 
 # ── Save new version ──────────────────────
 save_version "$NEW_VERSION"
