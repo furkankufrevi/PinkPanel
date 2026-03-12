@@ -51,6 +51,13 @@ func (h *UpdatesHandler) CheckForUpdates(c *fiber.Ctx) error {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == 404 {
+		// No releases published yet
+		return c.JSON(fiber.Map{
+			"current_version":  h.Version,
+			"update_available": false,
+		})
+	}
 	if resp.StatusCode != 200 {
 		return c.JSON(fiber.Map{
 			"current_version":  h.Version,
@@ -100,6 +107,14 @@ func (h *UpdatesHandler) GetReleases(c *fiber.Ctx) error {
 		})
 	}
 	defer resp.Body.Close()
+
+	// No releases yet
+	if resp.StatusCode == 404 || resp.StatusCode != 200 {
+		return c.JSON(fiber.Map{
+			"current_version": h.Version,
+			"releases":        []fiber.Map{},
+		})
+	}
 
 	body, _ := io.ReadAll(resp.Body)
 	var releases []githubRelease
