@@ -187,21 +187,19 @@ func (h *BackupHandler) Download(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "validation_error", "message": "can only download completed backups"}})
 	}
 
-	// Copy backup to a temp file the server process can read
-	tmpPath := fmt.Sprintf("/tmp/pinkpanel-backup-dl-%d-%d.tar.gz", id, time.Now().UnixNano())
+	// Copy backup to a path the server process can read
+	// (server uses PrivateTmp=true so /tmp/ is isolated; use ReadWritePaths dir instead)
+	tmpPath := fmt.Sprintf("/var/lib/pinkpanel/tmp/backup-dl-%d-%d.tar.gz", id, time.Now().UnixNano())
+	h.AgentClient.Call("dir_create", map[string]any{"path": "/var/lib/pinkpanel/tmp", "mode": "0755"})
 	if _, err := h.AgentClient.Call("file_copy", map[string]any{
 		"source": b.FilePath,
 		"dest":   tmpPath,
 	}); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "agent_error", "message": "failed to prepare backup for download: " + err.Error()}})
 	}
-	// Make temp file readable by server process
-	if _, err := h.AgentClient.Call("set_permissions", map[string]any{
-		"path": tmpPath,
-		"mode": "644",
-	}); err != nil {
-		log.Error().Err(err).Msg("failed to set permissions on temp backup file")
-	}
+	// Make temp file readable by server process (runs as pinkpanel user)
+	h.AgentClient.Call("set_permissions", map[string]any{"path": tmpPath, "mode": "644"})
+	h.AgentClient.Call("set_ownership", map[string]any{"owner": "pinkpanel", "group": "pinkpanel", "path": tmpPath})
 	// Clean up temp file after response
 	defer func() {
 		h.AgentClient.Call("file_delete", map[string]any{"path": tmpPath, "recursive": false})
