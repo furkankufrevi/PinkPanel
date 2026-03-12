@@ -354,6 +354,9 @@ install_missing_packages() {
     command -v unzip &>/dev/null || missing+=("unzip")
     command -v fail2ban-client &>/dev/null || missing+=("fail2ban")
     dpkg -l libmodsecurity3 &>/dev/null 2>&1 || missing+=("libmodsecurity3")
+    command -v postfix &>/dev/null || missing+=("postfix")
+    command -v dovecot &>/dev/null || missing+=("dovecot-core" "dovecot-imapd" "dovecot-lmtpd")
+    command -v opendkim-genkey &>/dev/null || missing+=("opendkim" "opendkim-tools")
     if (( ${#missing[@]} > 0 )); then
         log "Installing missing packages: ${missing[*]}..."
         export DEBIAN_FRONTEND=noninteractive
@@ -545,6 +548,190 @@ JAIL
     systemctl restart fail2ban > /dev/null 2>&1
 }
 
+# ── Ensure mail server is configured ───────
+setup_mail() {
+    # Idempotent: only create configs if missing
+
+    # Create vmail user
+    if ! id vmail &>/dev/null; then
+        groupadd -g 5000 vmail 2>/dev/null || true
+        useradd -g vmail -u 5000 vmail -d /var/mail/vhosts -s /usr/sbin/nologin 2>/dev/null || true
+    fi
+    mkdir -p /var/mail/vhosts
+    chown -R vmail:vmail /var/mail/vhosts
+
+    # Create virtual map files if missing
+    touch /etc/postfix/virtual-mailbox-domains 2>/dev/null || true
+    touch /etc/postfix/virtual-mailbox-maps 2>/dev/null || true
+    touch /etc/postfix/virtual 2>/dev/null || true
+
+    # Configure Postfix for virtual mailboxes if not already done
+    if ! grep -q "virtual_mailbox_domains" /etc/postfix/main.cf 2>/dev/null; then
+        log "Configuring Postfix for virtual mailboxes..."
+        local hostname
+        hostname=$(hostname -f 2>/dev/null || hostname)
+
+        # Append virtual mailbox settings
+        cat >> /etc/postfix/main.cf <<POSTFIX
+
+# PinkPanel virtual mailbox settings
+virtual_mailbox_domains = /etc/postfix/virtual-mailbox-domains
+virtual_mailbox_maps = hash:/etc/postfix/virtual-mailbox-maps
+virtual_mailbox_base = /var/mail/vhosts
+virtual_transport = lmtp:unix:private/dovecot-lmtp
+virtual_alias_maps = hash:/etc/postfix/virtual
+virtual_minimum_uid = 5000
+virtual_uid_maps = static:5000
+virtual_gid_maps = static:5000
+
+smtpd_sasl_auth_enable = yes
+smtpd_sasl_type = dovecot
+smtpd_sasl_path = private/auth
+smtpd_sasl_security_options = noanonymous
+
+milter_protocol = 6
+milter_default_action = accept
+smtpd_milters = inet:localhost:8891
+non_smtpd_milters = inet:localhost:8891
+POSTFIX
+        postmap /etc/postfix/virtual-mailbox-maps 2>/dev/null || true
+        postmap /etc/postfix/virtual 2>/dev/null || true
+    fi
+
+    # Enable submission port if missing
+    if ! grep -q "^submission" /etc/postfix/master.cf 2>/dev/null; then
+        cat >> /etc/postfix/master.cf <<'MASTER'
+
+submission inet n       -       y       -       -       smtpd
+  -o syslog_name=postfix/submission
+  -o smtpd_tls_security_level=encrypt
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_reject_unlisted_recipient=no
+  -o smtpd_recipient_restrictions=permit_sasl_authenticated,reject
+MASTER
+    fi
+
+    # Configure Dovecot passwd-file auth if missing
+    if [[ ! -f /etc/dovecot/conf.d/auth-passwdfile.conf.ext ]]; then
+        log "Configuring Dovecot..."
+        cat > /etc/dovecot/conf.d/10-auth.conf <<'DOVEAUTH'
+disable_plaintext_auth = no
+auth_mechanisms = plain login
+!include auth-passwdfile.conf.ext
+DOVEAUTH
+
+        cat > /etc/dovecot/conf.d/auth-passwdfile.conf.ext <<'DOVEPWD'
+passdb {
+  driver = passwd-file
+  args = scheme=SHA512-CRYPT /etc/dovecot/users
+}
+userdb {
+  driver = static
+  args = uid=vmail gid=vmail home=/var/mail/vhosts/%d/%n
+}
+DOVEPWD
+
+        cat > /etc/dovecot/conf.d/10-mail.conf <<'DOVEMAIL'
+mail_location = maildir:/var/mail/vhosts/%d/%n/Maildir
+namespace inbox {
+  inbox = yes
+}
+mail_privileged_group = vmail
+DOVEMAIL
+
+        cat > /etc/dovecot/conf.d/10-master.conf <<'DOVEMASTER'
+service imap-login {
+  inet_listener imap {
+    port = 143
+  }
+  inet_listener imaps {
+    port = 993
+    ssl = yes
+  }
+}
+service lmtp {
+  unix_listener /var/spool/postfix/private/dovecot-lmtp {
+    mode = 0600
+    user = postfix
+    group = postfix
+  }
+}
+service auth {
+  unix_listener /var/spool/postfix/private/auth {
+    mode = 0660
+    user = postfix
+    group = postfix
+  }
+  unix_listener auth-userdb {
+    mode = 0600
+    user = vmail
+  }
+}
+service auth-worker {
+  user = vmail
+}
+DOVEMASTER
+
+        cat > /etc/dovecot/conf.d/10-ssl.conf <<'DOVESSL'
+ssl = yes
+ssl_cert = </etc/ssl/certs/ssl-cert-snakeoil.pem
+ssl_key = </etc/ssl/private/ssl-cert-snakeoil.key
+ssl_min_protocol = TLSv1.2
+DOVESSL
+    fi
+
+    # Dovecot users file
+    touch /etc/dovecot/users
+    chown dovecot:dovecot /etc/dovecot/users 2>/dev/null || true
+    chmod 640 /etc/dovecot/users
+
+    # OpenDKIM
+    mkdir -p /etc/opendkim/keys
+    chown -R opendkim:opendkim /etc/opendkim 2>/dev/null || true
+    if [[ ! -f /etc/opendkim.conf ]] || ! grep -q "KeyTable" /etc/opendkim.conf 2>/dev/null; then
+        log "Configuring OpenDKIM..."
+        cat > /etc/opendkim.conf <<'DKIM'
+AutoRestart             yes
+AutoRestartRate         10/1h
+Syslog                  yes
+SyslogSuccess           yes
+LogWhy                  yes
+Canonicalization        relaxed/simple
+ExternalIgnoreList      refile:/etc/opendkim/trusted.hosts
+InternalHosts           refile:/etc/opendkim/trusted.hosts
+KeyTable                refile:/etc/opendkim/key.table
+SigningTable            refile:/etc/opendkim/signing.table
+Mode                    sv
+PidFile                 /run/opendkim/opendkim.pid
+SignatureAlgorithm      rsa-sha256
+UserID                  opendkim:opendkim
+Socket                  inet:8891@localhost
+DKIM
+        cat > /etc/opendkim/trusted.hosts <<'TRUSTED'
+127.0.0.1
+localhost
+TRUSTED
+        touch /etc/opendkim/key.table /etc/opendkim/signing.table
+    fi
+    mkdir -p /run/opendkim
+    chown opendkim:opendkim /run/opendkim 2>/dev/null || true
+
+    # Open mail ports if ufw is active
+    if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
+        ufw allow 25/tcp > /dev/null 2>&1 || true
+        ufw allow 587/tcp > /dev/null 2>&1 || true
+        ufw allow 993/tcp > /dev/null 2>&1 || true
+        ufw allow 143/tcp > /dev/null 2>&1 || true
+    fi
+
+    # Enable services
+    systemctl enable --now postfix > /dev/null 2>&1 || true
+    systemctl enable --now dovecot > /dev/null 2>&1 || true
+    systemctl enable --now opendkim > /dev/null 2>&1 || true
+
+    log "Mail server ready"
+}
+
 # ── Always-run fixups (run even when version matches) ──
 install_missing_packages
 fix_bind
@@ -552,6 +739,7 @@ fix_mysql_auth
 setup_phpmyadmin
 setup_modsecurity
 setup_fail2ban
+setup_mail
 
 # ── Run version-specific migrations ────────
 if [[ "$SKIP_BINARY" == false ]]; then

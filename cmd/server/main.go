@@ -26,6 +26,7 @@ import (
 	"github.com/pinkpanel/pinkpanel/internal/core/php"
 	"github.com/pinkpanel/pinkpanel/internal/core/backup"
 	"github.com/pinkpanel/pinkpanel/internal/core/ftp"
+	emailpkg "github.com/pinkpanel/pinkpanel/internal/core/email"
 	sslpkg "github.com/pinkpanel/pinkpanel/internal/core/ssl"
 	"github.com/pinkpanel/pinkpanel/internal/core/user"
 	"github.com/pinkpanel/pinkpanel/internal/db"
@@ -236,6 +237,16 @@ func main() {
 		BcryptCost:  cfg.Security.BcryptCost,
 	}
 
+	// Email service & handler
+	emailSvc := &emailpkg.Service{DB: database}
+	emailHandler := &handlers.EmailHandler{
+		DB:          database,
+		EmailSvc:    emailSvc,
+		DomainSvc:   domainSvc,
+		DNSSvc:      dnsSvc,
+		AgentClient: agentClient,
+	}
+
 	// Security handler (Fail2ban)
 	securityHandler := &handlers.SecurityHandler{
 		DB:          database,
@@ -392,6 +403,23 @@ func main() {
 	adminOnly.Get("/security/fail2ban/banned", securityHandler.Fail2banBannedIPs)
 	adminOnly.Post("/security/fail2ban/ban", securityHandler.Fail2banBanIP)
 	adminOnly.Post("/security/fail2ban/unban", securityHandler.Fail2banUnbanIP)
+
+	// Email routes
+	domainEmail := protected.Group("/domains/:id/email")
+	domainEmail.Get("/accounts", emailHandler.ListAccounts)
+	domainEmail.Post("/accounts", emailHandler.CreateAccount)
+	domainEmail.Delete("/accounts/:accountId", emailHandler.DeleteAccount)
+	domainEmail.Put("/accounts/:accountId/quota", emailHandler.UpdateQuota)
+	domainEmail.Put("/accounts/:accountId/password", emailHandler.ChangePassword)
+	domainEmail.Put("/accounts/:accountId/toggle", emailHandler.ToggleAccount)
+	domainEmail.Get("/forwarders", emailHandler.ListForwarders)
+	domainEmail.Post("/forwarders", emailHandler.CreateForwarder)
+	domainEmail.Delete("/forwarders/:fwdId", emailHandler.DeleteForwarder)
+	domainEmail.Get("/dns-records", emailHandler.GetDNSRecords)
+	domainEmail.Post("/dns-records", emailHandler.ApplyDNSRecords)
+	adminOnly.Get("/email/queue", emailHandler.ListQueue)
+	adminOnly.Post("/email/queue/flush", emailHandler.FlushQueue)
+	adminOnly.Delete("/email/queue/:queueId", emailHandler.DeleteQueueItem)
 
 	// File manager routes
 	protected.Get("/domains/:id/files", fileHandler.List)

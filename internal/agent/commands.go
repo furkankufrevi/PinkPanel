@@ -120,6 +120,17 @@ func (r *CommandRegistry) registerBuiltins() {
 	r.commands["fail2ban_banned_ips"] = cmdFail2banBannedIPs
 	r.commands["fail2ban_ban_ip"] = cmdFail2banBanIP
 	r.commands["fail2ban_unban_ip"] = cmdFail2banUnbanIP
+
+	// Email (Postfix + Dovecot)
+	r.commands["email_create_account"] = cmdEmailCreateAccount
+	r.commands["email_delete_account"] = cmdEmailDeleteAccount
+	r.commands["email_change_password"] = cmdEmailChangePassword
+	r.commands["email_reload"] = cmdEmailReload
+	r.commands["email_update_virtual_maps"] = cmdEmailUpdateVirtualMaps
+	r.commands["email_queue_list"] = cmdEmailQueueList
+	r.commands["email_queue_flush"] = cmdEmailQueueFlush
+	r.commands["email_queue_delete"] = cmdEmailQueueDelete
+	r.commands["email_generate_dkim"] = cmdEmailGenerateDKIM
 }
 
 // ---------- Param types ----------
@@ -2064,6 +2075,409 @@ func cmdFail2banUnbanIP(params json.RawMessage) (interface{}, error) {
 	}
 
 	return map[string]string{"status": "unbanned", "ip": p.IP, "jail": jail}, nil
+}
+
+// ---------- Email (Postfix + Dovecot) commands ----------
+
+const (
+	dovecotUsersFile        = "/etc/dovecot/users"
+	postfixVirtualDomains   = "/etc/postfix/virtual-mailbox-domains"
+	postfixVirtualMailboxes = "/etc/postfix/virtual-mailbox-maps"
+	postfixVirtualAliases   = "/etc/postfix/virtual"
+	vmailDir                = "/var/mail/vhosts"
+)
+
+type emailAccountParams struct {
+	Domain   string `json:"domain"`
+	Address  string `json:"address"`
+	Password string `json:"password"`
+	QuotaMB  int64  `json:"quota_mb"`
+}
+
+type emailDeleteAccountParams struct {
+	Domain  string `json:"domain"`
+	Address string `json:"address"`
+}
+
+type emailChangePasswordParams struct {
+	Domain   string `json:"domain"`
+	Address  string `json:"address"`
+	Password string `json:"password"`
+}
+
+type emailVirtualMapsParams struct {
+	// Domains is a list of domain names that have email enabled
+	Domains []string `json:"domains"`
+	// Mailboxes maps "user@domain" -> "domain/user/"
+	Mailboxes map[string]string `json:"mailboxes"`
+	// Aliases maps "source@domain" -> "dest@other.com"
+	Aliases map[string]string `json:"aliases"`
+}
+
+type emailQueueDeleteParams struct {
+	QueueID string `json:"queue_id"`
+}
+
+type emailDKIMParams struct {
+	Domain string `json:"domain"`
+}
+
+func cmdEmailCreateAccount(params json.RawMessage) (interface{}, error) {
+	var p emailAccountParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if !safeNameRe.MatchString(p.Domain) {
+		return nil, fmt.Errorf("invalid domain: %s", p.Domain)
+	}
+	if !safeNameRe.MatchString(p.Address) {
+		return nil, fmt.Errorf("invalid address: %s", p.Address)
+	}
+	if p.Password == "" {
+		return nil, fmt.Errorf("password is required")
+	}
+	if runtime.GOOS != "linux" {
+		return unsupportedOS()
+	}
+
+	// Hash password using doveadm
+	hashOut, err := exec.Command("doveadm", "pw", "-s", "SHA512-CRYPT", "-p", p.Password).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("doveadm pw: %s", strings.TrimSpace(string(hashOut)))
+	}
+	passHash := strings.TrimSpace(string(hashOut))
+
+	fullAddr := fmt.Sprintf("%s@%s", p.Address, p.Domain)
+	maildir := fmt.Sprintf("%s/%s/%s/Maildir", vmailDir, p.Domain, p.Address)
+
+	// Create maildir
+	if err := os.MkdirAll(maildir, 0700); err != nil {
+		return nil, fmt.Errorf("creating maildir: %w", err)
+	}
+	// Set ownership to vmail (uid/gid 5000)
+	exec.Command("chown", "-R", "vmail:vmail", fmt.Sprintf("%s/%s/%s", vmailDir, p.Domain, p.Address)).Run()
+
+	// Add to dovecot users file: user@domain:{hash}::5000:5000::/var/mail/vhosts/domain/user::userdb_quota_rule=*:storage=QuotaMB
+	userLine := fmt.Sprintf("%s:%s::5000:5000::%s/%s/%s", fullAddr, passHash, vmailDir, p.Domain, p.Address)
+	if p.QuotaMB > 0 {
+		userLine += fmt.Sprintf("::userdb_quota_rule=*:storage=%dM", p.QuotaMB)
+	}
+
+	// Read existing file, remove old entry if any, append new
+	existing, _ := os.ReadFile(dovecotUsersFile)
+	lines := strings.Split(string(existing), "\n")
+	var newLines []string
+	for _, line := range lines {
+		if line == "" || strings.HasPrefix(line, fullAddr+":") {
+			continue
+		}
+		newLines = append(newLines, line)
+	}
+	newLines = append(newLines, userLine)
+	if err := os.WriteFile(dovecotUsersFile, []byte(strings.Join(newLines, "\n")+"\n"), 0640); err != nil {
+		return nil, fmt.Errorf("writing dovecot users: %w", err)
+	}
+	exec.Command("chown", "dovecot:dovecot", dovecotUsersFile).Run()
+
+	return map[string]string{"status": "ok", "address": fullAddr}, nil
+}
+
+func cmdEmailDeleteAccount(params json.RawMessage) (interface{}, error) {
+	var p emailDeleteAccountParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if !safeNameRe.MatchString(p.Domain) || !safeNameRe.MatchString(p.Address) {
+		return nil, fmt.Errorf("invalid domain or address")
+	}
+	if runtime.GOOS != "linux" {
+		return unsupportedOS()
+	}
+
+	fullAddr := fmt.Sprintf("%s@%s", p.Address, p.Domain)
+
+	// Remove from dovecot users file
+	existing, _ := os.ReadFile(dovecotUsersFile)
+	lines := strings.Split(string(existing), "\n")
+	var newLines []string
+	for _, line := range lines {
+		if line == "" || strings.HasPrefix(line, fullAddr+":") {
+			continue
+		}
+		newLines = append(newLines, line)
+	}
+	os.WriteFile(dovecotUsersFile, []byte(strings.Join(newLines, "\n")+"\n"), 0640)
+
+	// Remove maildir
+	maildirPath := fmt.Sprintf("%s/%s/%s", vmailDir, p.Domain, p.Address)
+	os.RemoveAll(maildirPath)
+
+	return map[string]string{"status": "ok", "address": fullAddr}, nil
+}
+
+func cmdEmailChangePassword(params json.RawMessage) (interface{}, error) {
+	var p emailChangePasswordParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if !safeNameRe.MatchString(p.Domain) || !safeNameRe.MatchString(p.Address) {
+		return nil, fmt.Errorf("invalid domain or address")
+	}
+	if p.Password == "" {
+		return nil, fmt.Errorf("password is required")
+	}
+	if runtime.GOOS != "linux" {
+		return unsupportedOS()
+	}
+
+	// Hash new password
+	hashOut, err := exec.Command("doveadm", "pw", "-s", "SHA512-CRYPT", "-p", p.Password).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("doveadm pw: %s", strings.TrimSpace(string(hashOut)))
+	}
+	passHash := strings.TrimSpace(string(hashOut))
+	fullAddr := fmt.Sprintf("%s@%s", p.Address, p.Domain)
+
+	// Read file and replace the password for this user
+	existing, _ := os.ReadFile(dovecotUsersFile)
+	lines := strings.Split(string(existing), "\n")
+	found := false
+	for i, line := range lines {
+		if strings.HasPrefix(line, fullAddr+":") {
+			parts := strings.SplitN(line, ":", 3)
+			if len(parts) >= 3 {
+				lines[i] = fullAddr + ":" + passHash + ":" + parts[2]
+			} else {
+				lines[i] = fullAddr + ":" + passHash + "::5000:5000::" + vmailDir + "/" + p.Domain + "/" + p.Address
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("email account not found in dovecot users file")
+	}
+
+	os.WriteFile(dovecotUsersFile, []byte(strings.Join(lines, "\n")), 0640)
+	return map[string]string{"status": "ok", "address": fullAddr}, nil
+}
+
+func cmdEmailReload(_ json.RawMessage) (interface{}, error) {
+	if runtime.GOOS != "linux" {
+		return unsupportedOS()
+	}
+	exec.Command("systemctl", "reload", "postfix").CombinedOutput()
+	exec.Command("systemctl", "reload", "dovecot").CombinedOutput()
+	return map[string]string{"status": "ok"}, nil
+}
+
+func cmdEmailUpdateVirtualMaps(params json.RawMessage) (interface{}, error) {
+	var p emailVirtualMapsParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if runtime.GOOS != "linux" {
+		return unsupportedOS()
+	}
+
+	// Write virtual-mailbox-domains
+	var domainLines []string
+	for _, d := range p.Domains {
+		if !safeNameRe.MatchString(d) {
+			continue
+		}
+		domainLines = append(domainLines, d+" OK")
+	}
+	os.WriteFile(postfixVirtualDomains, []byte(strings.Join(domainLines, "\n")+"\n"), 0644)
+
+	// Write virtual-mailbox-maps
+	var mbLines []string
+	for addr, path := range p.Mailboxes {
+		mbLines = append(mbLines, addr+" "+path)
+	}
+	os.WriteFile(postfixVirtualMailboxes, []byte(strings.Join(mbLines, "\n")+"\n"), 0644)
+
+	// Write virtual aliases
+	var aliasLines []string
+	for src, dst := range p.Aliases {
+		aliasLines = append(aliasLines, src+" "+dst)
+	}
+	os.WriteFile(postfixVirtualAliases, []byte(strings.Join(aliasLines, "\n")+"\n"), 0644)
+
+	// Postmap the hash files
+	exec.Command("postmap", postfixVirtualMailboxes).Run()
+	exec.Command("postmap", postfixVirtualAliases).Run()
+
+	// Reload postfix
+	exec.Command("systemctl", "reload", "postfix").Run()
+
+	return map[string]string{"status": "ok"}, nil
+}
+
+func cmdEmailQueueList(_ json.RawMessage) (interface{}, error) {
+	if runtime.GOOS != "linux" {
+		return unsupportedOS()
+	}
+	out, err := exec.Command("postqueue", "-j").CombinedOutput()
+	if err != nil {
+		// Empty queue returns error sometimes
+		if strings.TrimSpace(string(out)) == "" {
+			return map[string]interface{}{"queue": []interface{}{}}, nil
+		}
+		return nil, fmt.Errorf("postqueue: %s", strings.TrimSpace(string(out)))
+	}
+
+	// Parse JSON lines output
+	var items []interface{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		var item interface{}
+		if err := json.Unmarshal([]byte(line), &item); err == nil {
+			items = append(items, item)
+		}
+	}
+	return map[string]interface{}{"queue": items}, nil
+}
+
+func cmdEmailQueueFlush(_ json.RawMessage) (interface{}, error) {
+	if runtime.GOOS != "linux" {
+		return unsupportedOS()
+	}
+	out, err := exec.Command("postqueue", "-f").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("postqueue flush: %s", strings.TrimSpace(string(out)))
+	}
+	return map[string]string{"status": "ok"}, nil
+}
+
+func cmdEmailQueueDelete(params json.RawMessage) (interface{}, error) {
+	var p emailQueueDeleteParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	// Queue IDs are hex strings
+	if !regexp.MustCompile(`^[A-Fa-f0-9]+$`).MatchString(p.QueueID) {
+		return nil, fmt.Errorf("invalid queue ID: %s", p.QueueID)
+	}
+	if runtime.GOOS != "linux" {
+		return unsupportedOS()
+	}
+	out, err := exec.Command("postsuper", "-d", p.QueueID).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("postsuper: %s", strings.TrimSpace(string(out)))
+	}
+	return map[string]string{"status": "ok"}, nil
+}
+
+func cmdEmailGenerateDKIM(params json.RawMessage) (interface{}, error) {
+	var p emailDKIMParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if !safeNameRe.MatchString(p.Domain) {
+		return nil, fmt.Errorf("invalid domain: %s", p.Domain)
+	}
+	if runtime.GOOS != "linux" {
+		return unsupportedOS()
+	}
+
+	keyDir := fmt.Sprintf("/etc/opendkim/keys/%s", p.Domain)
+	pubKey := filepath.Join(keyDir, "mail.txt")
+
+	// If key already exists, just return the public key
+	if _, err := os.Stat(pubKey); err == nil {
+		data, _ := os.ReadFile(pubKey)
+		return map[string]string{
+			"status":     "ok",
+			"public_key": extractDKIMPublicKey(string(data)),
+			"selector":   "mail",
+		}, nil
+	}
+
+	// Generate new DKIM key
+	if err := os.MkdirAll(keyDir, 0700); err != nil {
+		return nil, fmt.Errorf("creating DKIM key directory: %w", err)
+	}
+
+	out, err := exec.Command("opendkim-genkey", "-b", "2048", "-d", p.Domain, "-D", keyDir, "-s", "mail").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("opendkim-genkey: %s", strings.TrimSpace(string(out)))
+	}
+
+	// Set ownership
+	exec.Command("chown", "-R", "opendkim:opendkim", keyDir).Run()
+
+	// Update OpenDKIM key table and signing table
+	updateOpenDKIMTables(p.Domain)
+
+	// Read and return public key
+	data, _ := os.ReadFile(pubKey)
+	return map[string]string{
+		"status":     "ok",
+		"public_key": extractDKIMPublicKey(string(data)),
+		"selector":   "mail",
+	}, nil
+}
+
+// extractDKIMPublicKey extracts the p= value from opendkim-genkey output.
+func extractDKIMPublicKey(raw string) string {
+	// The file contains a TXT record like:
+	// mail._domainkey IN TXT ( "v=DKIM1; k=rsa; p=MIIBIj..." )
+	// We need to extract just the record value
+	raw = strings.ReplaceAll(raw, "\n", "")
+	raw = strings.ReplaceAll(raw, "\t", "")
+
+	// Find content between quotes and concatenate
+	var parts []string
+	inQuote := false
+	current := ""
+	for _, ch := range raw {
+		if ch == '"' {
+			if inQuote {
+				parts = append(parts, current)
+				current = ""
+			}
+			inQuote = !inQuote
+			continue
+		}
+		if inQuote {
+			current += string(ch)
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+// updateOpenDKIMTables adds a domain to the OpenDKIM key and signing tables.
+func updateOpenDKIMTables(domain string) {
+	keyTable := "/etc/opendkim/key.table"
+	signingTable := "/etc/opendkim/signing.table"
+
+	// Key table: mail._domainkey.domain domain:mail:/etc/opendkim/keys/domain/mail.private
+	entry := fmt.Sprintf("mail._domainkey.%s %s:mail:/etc/opendkim/keys/%s/mail.private", domain, domain, domain)
+	appendIfMissing(keyTable, entry, domain)
+
+	// Signing table: *@domain mail._domainkey.domain
+	sigEntry := fmt.Sprintf("*@%s mail._domainkey.%s", domain, domain)
+	appendIfMissing(signingTable, sigEntry, domain)
+
+	// Reload opendkim
+	exec.Command("systemctl", "reload", "opendkim").Run()
+}
+
+// appendIfMissing adds a line to a file if no line containing the search string exists.
+func appendIfMissing(filePath, line, search string) {
+	existing, _ := os.ReadFile(filePath)
+	if strings.Contains(string(existing), search) {
+		return
+	}
+	f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	f.WriteString(line + "\n")
 }
 
 // ---------- Helpers ----------
