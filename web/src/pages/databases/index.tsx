@@ -42,6 +42,7 @@ import {
   deleteDatabase,
   createDatabaseUser,
   deleteDatabaseUser,
+  getPhpMyAdminUrl,
 } from "@/api/databases";
 import type { Database, DatabaseUser } from "@/types/database";
 import type { AxiosError } from "axios";
@@ -241,6 +242,25 @@ export function DatabasesPage() {
   ];
 
   const phpmyadminUrl = `${window.location.protocol}//${window.location.hostname}/phpmyadmin/`;
+
+  async function openPhpMyAdmin(dbId?: number) {
+    if (!dbId) {
+      window.open(phpmyadminUrl, "_blank");
+      return;
+    }
+    try {
+      const { url } = await getPhpMyAdminUrl(dbId);
+      window.open(`${window.location.protocol}//${window.location.hostname}${url}`, "_blank");
+    } catch (err) {
+      const axiosErr = err as AxiosError<APIError>;
+      const msg = axiosErr.response?.data?.error?.message ?? "Failed to open phpMyAdmin";
+      if (msg.includes("Create a database user first")) {
+        toast.error("Create a database user first to use phpMyAdmin auto-login");
+      } else {
+        toast.error(msg);
+      }
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -458,7 +478,7 @@ export function DatabasesPage() {
                 variant="outline"
                 size="sm"
                 className="w-full justify-start"
-                onClick={() => window.open(phpmyadminUrl, "_blank")}
+                onClick={() => openPhpMyAdmin(selectedDb?.id)}
               >
                 <ExternalLink className="h-4 w-4 mr-2" />
                 Open in phpMyAdmin

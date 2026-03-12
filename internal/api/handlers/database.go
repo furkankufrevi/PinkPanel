@@ -1,7 +1,10 @@
 package handlers
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strconv"
 
@@ -181,7 +184,7 @@ func (h *DatabaseHandler) CreateUser(c *fiber.Ctx) error {
 	}
 
 	// Store in panel database
-	u, err := h.DBSvc.CreateUser(dbID, req.Username, req.Host, req.Permissions)
+	u, err := h.DBSvc.CreateUser(dbID, req.Username, req.Host, req.Permissions, req.Password)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "validation_error", "message": err.Error()}})
 	}
@@ -215,4 +218,62 @@ func (h *DatabaseHandler) DeleteUser(c *fiber.Ctx) error {
 	db.LogActivity(h.DB, adminID, "delete_db_user", "database", u.DatabaseID, fmt.Sprintf("%s@%s", u.Username, u.Host), c.IP())
 
 	return c.JSON(fiber.Map{"status": "ok"})
+}
+
+// PhpMyAdmin generates a one-time signon token for phpMyAdmin auto-login.
+func (h *DatabaseHandler) PhpMyAdmin(c *fiber.Ctx) error {
+	dbID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid database ID"}})
+	}
+
+	d, err := h.DBSvc.GetByID(dbID)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "database not found"}})
+	}
+
+	// Find a user with stored password for this database
+	user, err := h.DBSvc.GetFirstUserWithPassword(dbID)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "no_user", "message": "No database user with stored credentials. Create a database user first."}})
+	}
+
+	if user.PasswordEnc == nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "no_password", "message": "User has no stored password"}})
+	}
+
+	password, err := dbpkg.DecodePassword(*user.PasswordEnc)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "internal_error", "message": "failed to decode stored password"}})
+	}
+
+	// Generate a one-time token
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "internal_error", "message": "failed to generate token"}})
+	}
+	token := hex.EncodeToString(tokenBytes)
+
+	// Write token file via agent
+	tokenData, _ := json.Marshal(map[string]string{
+		"username": user.Username,
+		"password": password,
+		"database": d.Name,
+	})
+
+	tokenPath := fmt.Sprintf("/var/lib/pinkpanel/pma-tokens/%s.json", token)
+	if _, err := h.AgentClient.Call("dir_create", map[string]any{
+		"path": "/var/lib/pinkpanel/pma-tokens", "mode": "0700",
+	}); err != nil {
+		log.Error().Err(err).Msg("failed to create pma-tokens directory")
+	}
+	if _, err := h.AgentClient.Call("file_write", map[string]any{
+		"path": tokenPath, "content": string(tokenData), "mode": "0644",
+	}); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "agent_error", "message": "failed to write signon token"}})
+	}
+
+	return c.JSON(fiber.Map{
+		"url": fmt.Sprintf("/phpmyadmin/signon.php?token=%s", token),
+	})
 }

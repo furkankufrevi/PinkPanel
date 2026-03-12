@@ -231,15 +231,10 @@ fix_mysql_auth() {
 
 # ── Ensure phpMyAdmin is installed ──────────
 setup_phpmyadmin() {
-    # Skip if already installed
-    if [[ -d /usr/share/phpmyadmin ]] && [[ -f /etc/nginx/snippets/phpmyadmin.conf ]]; then
-        return
-    fi
-
-    log "Setting up phpMyAdmin..."
-
     export DEBIAN_FRONTEND=noninteractive
+
     if [[ ! -d /usr/share/phpmyadmin ]]; then
+        log "Installing phpMyAdmin..."
         echo "phpmyadmin phpmyadmin/dbconfig-install boolean false" | debconf-set-selections
         echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect none" | debconf-set-selections
         apt-get update -qq
@@ -249,8 +244,56 @@ setup_phpmyadmin() {
         }
     fi
 
+    # Create token directory
+    mkdir -p /var/lib/pinkpanel/pma-tokens
+    chown www-data:www-data /var/lib/pinkpanel/pma-tokens
+    chmod 700 /var/lib/pinkpanel/pma-tokens
+
+    # Configure phpMyAdmin for signon authentication
+    mkdir -p /etc/phpmyadmin/conf.d
+    cat > /etc/phpmyadmin/conf.d/pinkpanel.php <<'PMACONF'
+<?php
+$cfg['Servers'][1]['auth_type'] = 'signon';
+$cfg['Servers'][1]['SignonSession'] = 'PinkPanelPMA';
+$cfg['Servers'][1]['SignonURL'] = 'signon.php';
+$cfg['Servers'][1]['host'] = 'localhost';
+PMACONF
+
+    # Deploy signon.php script (always update)
+    cat > /usr/share/phpmyadmin/signon.php <<'SIGNON'
+<?php
+$token = isset($_GET['token']) ? preg_replace('/[^a-f0-9]/', '', $_GET['token']) : '';
+if (!$token) {
+    die('Missing token');
+}
+
+$tokenFile = '/var/lib/pinkpanel/pma-tokens/' . $token . '.json';
+if (!file_exists($tokenFile)) {
+    die('Invalid or expired token. Please try again from the panel.');
+}
+
+$data = json_decode(file_get_contents($tokenFile), true);
+@unlink($tokenFile);
+
+if (!$data || empty($data['username']) || empty($data['password'])) {
+    die('Invalid token data');
+}
+
+session_name('PinkPanelPMA');
+session_start();
+$_SESSION['PMA_single_signon_user'] = $data['username'];
+$_SESSION['PMA_single_signon_password'] = $data['password'];
+$_SESSION['PMA_single_signon_host'] = 'localhost';
+
+$db = isset($data['database']) ? urlencode($data['database']) : '';
+header('Location: index.php' . ($db ? '?db=' . $db : ''));
+exit;
+SIGNON
+    chown www-data:www-data /usr/share/phpmyadmin/signon.php
+
     # Create NGINX snippet
-    cat > /etc/nginx/snippets/phpmyadmin.conf <<'PMA'
+    if [[ ! -f /etc/nginx/snippets/phpmyadmin.conf ]]; then
+        cat > /etc/nginx/snippets/phpmyadmin.conf <<'PMA'
 location /phpmyadmin/ {
     alias /usr/share/phpmyadmin/;
     index index.php;
@@ -264,11 +307,11 @@ location /phpmyadmin/ {
 }
 PMA
 
-    # Find the active PHP-FPM socket
-    local php_sock
-    php_sock=$(ls /run/php/php*-fpm.sock 2>/dev/null | head -1)
-    if [[ -n "$php_sock" ]]; then
-        sed -i "s|unix:/run/php/php-fpm.sock|unix:$php_sock|" /etc/nginx/snippets/phpmyadmin.conf
+        local php_sock
+        php_sock=$(ls /run/php/php*-fpm.sock 2>/dev/null | head -1)
+        if [[ -n "$php_sock" ]]; then
+            sed -i "s|unix:/run/php/php-fpm.sock|unix:$php_sock|" /etc/nginx/snippets/phpmyadmin.conf
+        fi
     fi
 
     # Include in default NGINX server block
@@ -276,10 +319,10 @@ PMA
         sed -i '/server_name _;/a\\n\tinclude snippets/phpmyadmin.conf;' /etc/nginx/sites-available/default
     fi
 
-    # Reload NGINX to pick up phpMyAdmin
+    # Reload NGINX
     nginx -t > /dev/null 2>&1 && systemctl reload nginx 2>/dev/null || true
 
-    log "phpMyAdmin configured at /phpmyadmin/"
+    log "phpMyAdmin configured with auto-login"
 }
 
 # ── Ensure required packages ────────────────

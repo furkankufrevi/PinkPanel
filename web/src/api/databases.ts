@@ -40,3 +40,10 @@ export async function deleteDatabaseUser(
 ): Promise<void> {
   await api.delete(`/databases/${databaseId}/users/${userId}`);
 }
+
+export async function getPhpMyAdminUrl(
+  databaseId: number
+): Promise<{ url: string }> {
+  const { data } = await api.post(`/databases/${databaseId}/phpmyadmin`);
+  return data;
+}

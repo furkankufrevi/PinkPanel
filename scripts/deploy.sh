@@ -387,6 +387,39 @@ setup_phpmyadmin() {
         return
     }
 
+    mkdir -p /var/lib/pinkpanel/pma-tokens
+    chown www-data:www-data /var/lib/pinkpanel/pma-tokens
+    chmod 700 /var/lib/pinkpanel/pma-tokens
+
+    mkdir -p /etc/phpmyadmin/conf.d
+    cat > /etc/phpmyadmin/conf.d/pinkpanel.php <<'PMACONF'
+<?php
+$cfg['Servers'][1]['auth_type'] = 'signon';
+$cfg['Servers'][1]['SignonSession'] = 'PinkPanelPMA';
+$cfg['Servers'][1]['SignonURL'] = 'signon.php';
+$cfg['Servers'][1]['host'] = 'localhost';
+PMACONF
+
+    cat > /usr/share/phpmyadmin/signon.php <<'SIGNON'
+<?php
+$token = isset($_GET['token']) ? preg_replace('/[^a-f0-9]/', '', $_GET['token']) : '';
+if (!$token) { die('Missing token'); }
+$tokenFile = '/var/lib/pinkpanel/pma-tokens/' . $token . '.json';
+if (!file_exists($tokenFile)) { die('Invalid or expired token.'); }
+$data = json_decode(file_get_contents($tokenFile), true);
+@unlink($tokenFile);
+if (!$data || empty($data['username']) || empty($data['password'])) { die('Invalid token data'); }
+session_name('PinkPanelPMA');
+session_start();
+$_SESSION['PMA_single_signon_user'] = $data['username'];
+$_SESSION['PMA_single_signon_password'] = $data['password'];
+$_SESSION['PMA_single_signon_host'] = 'localhost';
+$db = isset($data['database']) ? urlencode($data['database']) : '';
+header('Location: index.php' . ($db ? '?db=' . $db : ''));
+exit;
+SIGNON
+    chown www-data:www-data /usr/share/phpmyadmin/signon.php
+
     cat > /etc/nginx/snippets/phpmyadmin.conf <<'PMA'
 location /phpmyadmin/ {
     alias /usr/share/phpmyadmin/;
@@ -411,7 +444,7 @@ PMA
         sed -i '/server_name _;/a\\n\tinclude snippets/phpmyadmin.conf;' /etc/nginx/sites-available/default
     fi
 
-    log "phpMyAdmin configured at /phpmyadmin/"
+    log "phpMyAdmin configured with auto-login"
 }
 
 # ── Firewall ──────────────────────────────────

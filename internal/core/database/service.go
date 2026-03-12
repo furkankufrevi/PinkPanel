@@ -2,6 +2,7 @@ package database
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"regexp"
 )
@@ -19,12 +20,13 @@ type Database struct {
 }
 
 type DatabaseUser struct {
-	ID          int64  `json:"id"`
-	DatabaseID  int64  `json:"database_id"`
-	Username    string `json:"username"`
-	Host        string `json:"host"`
-	Permissions string `json:"permissions"`
-	CreatedAt   string `json:"created_at"`
+	ID          int64   `json:"id"`
+	DatabaseID  int64   `json:"database_id"`
+	Username    string  `json:"username"`
+	Host        string  `json:"host"`
+	Permissions string  `json:"permissions"`
+	PasswordEnc *string `json:"-"`
+	CreatedAt   string  `json:"created_at"`
 }
 
 type Service struct {
@@ -130,7 +132,7 @@ func (s *Service) ListUsers(databaseID int64) ([]DatabaseUser, error) {
 }
 
 // CreateUser inserts a new database user record.
-func (s *Service) CreateUser(databaseID int64, username, host, permissions string) (*DatabaseUser, error) {
+func (s *Service) CreateUser(databaseID int64, username, host, permissions, password string) (*DatabaseUser, error) {
 	if !safeNameRe.MatchString(username) {
 		return nil, fmt.Errorf("invalid username: must be alphanumeric with underscores/hyphens")
 	}
@@ -140,9 +142,15 @@ func (s *Service) CreateUser(databaseID int64, username, host, permissions strin
 	if permissions == "" {
 		permissions = "ALL"
 	}
+	// Store password base64-encoded (panel admin has root access anyway)
+	var passwordEnc *string
+	if password != "" {
+		encoded := encodePassword(password)
+		passwordEnc = &encoded
+	}
 	res, err := s.DB.Exec(
-		"INSERT INTO database_users (database_id, username, host, permissions) VALUES (?, ?, ?, ?)",
-		databaseID, username, host, permissions,
+		"INSERT INTO database_users (database_id, username, host, permissions, password_enc) VALUES (?, ?, ?, ?, ?)",
+		databaseID, username, host, permissions, passwordEnc,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating user: %w", err)
@@ -154,6 +162,46 @@ func (s *Service) CreateUser(databaseID int64, username, host, permissions strin
 	).Scan(&u.ID, &u.DatabaseID, &u.Username, &u.Host, &u.Permissions, &u.CreatedAt)
 	if err != nil {
 		return nil, err
+	}
+	u.PasswordEnc = passwordEnc
+	return u, nil
+}
+
+// GetUserWithPassword returns a database user including stored password.
+func (s *Service) GetUserWithPassword(id int64) (*DatabaseUser, error) {
+	u := &DatabaseUser{}
+	var passwordEnc sql.NullString
+	err := s.DB.QueryRow(
+		"SELECT id, database_id, username, host, permissions, password_enc, created_at FROM database_users WHERE id = ?", id,
+	).Scan(&u.ID, &u.DatabaseID, &u.Username, &u.Host, &u.Permissions, &passwordEnc, &u.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("user not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if passwordEnc.Valid {
+		u.PasswordEnc = &passwordEnc.String
+	}
+	return u, nil
+}
+
+// GetFirstUserWithPassword returns the first user for a database that has a stored password.
+func (s *Service) GetFirstUserWithPassword(databaseID int64) (*DatabaseUser, error) {
+	u := &DatabaseUser{}
+	var passwordEnc sql.NullString
+	err := s.DB.QueryRow(
+		"SELECT id, database_id, username, host, permissions, password_enc, created_at FROM database_users WHERE database_id = ? AND password_enc IS NOT NULL LIMIT 1",
+		databaseID,
+	).Scan(&u.ID, &u.DatabaseID, &u.Username, &u.Host, &u.Permissions, &passwordEnc, &u.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("no user with stored password found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if passwordEnc.Valid {
+		u.PasswordEnc = &passwordEnc.String
 	}
 	return u, nil
 }
@@ -181,4 +229,17 @@ func (s *Service) Count() (int, error) {
 	var count int
 	err := s.DB.QueryRow("SELECT COUNT(*) FROM databases").Scan(&count)
 	return count, err
+}
+
+func encodePassword(password string) string {
+	return base64.StdEncoding.EncodeToString([]byte(password))
+}
+
+// DecodePassword decodes a stored password.
+func DecodePassword(encoded string) (string, error) {
+	b, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }

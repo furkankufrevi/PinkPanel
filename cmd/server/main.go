@@ -38,7 +38,7 @@ import (
 //go:embed all:static
 var embeddedFiles embed.FS
 
-var version = "0.3.3139-alpha"
+var version = "0.3.3140-alpha"
 
 func main() {
 	// Parse flags
@@ -315,6 +315,7 @@ func main() {
 	protected.Delete("/databases/:id", databaseHandler.Delete)
 	protected.Post("/databases/:id/users", databaseHandler.CreateUser)
 	protected.Delete("/databases/:id/users/:userId", databaseHandler.DeleteUser)
+	protected.Post("/databases/:id/phpmyadmin", databaseHandler.PhpMyAdmin)
 
 	// FTP routes
 	protected.Get("/ftp", ftpHandler.List)
