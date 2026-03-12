@@ -179,6 +179,56 @@ cp "$BUILD_DIR/dist/pinkpanel-agent" "$PINKPANEL_HOME/bin/"
 cp "$BUILD_DIR/dist/pinkpanel-cli"   "$PINKPANEL_HOME/bin/"
 chmod +x "$PINKPANEL_HOME/bin/"*
 
+# ── Ensure MySQL root uses unix_socket auth ──
+fix_mysql_auth() {
+    # Check if root can connect without password (unix_socket)
+    if mysql -u root -e "SELECT 1" &>/dev/null; then
+        # Already working — ensure plugin is unix_socket
+        local plugin
+        plugin=$(mysql -u root -N -e "SELECT plugin FROM mysql.user WHERE user='root' AND host='localhost';" 2>/dev/null || echo "")
+        if [[ "$plugin" != "unix_socket" ]]; then
+            log "Switching MySQL root to unix_socket auth..."
+            mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket; FLUSH PRIVILEGES;" 2>/dev/null || true
+        fi
+        # Clean up legacy password file
+        rm -f /etc/pinkpanel/mysql.cnf
+        return
+    fi
+
+    # Root can't connect — try with legacy password file
+    if [[ -f /etc/pinkpanel/mysql.cnf ]]; then
+        log "Migrating MySQL root auth to unix_socket via password file..."
+        if mysql --defaults-file=/etc/pinkpanel/mysql.cnf -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket; FLUSH PRIVILEGES;" 2>/dev/null; then
+            log "MySQL auth migrated"
+            rm -f /etc/pinkpanel/mysql.cnf
+            return
+        fi
+    fi
+
+    # Last resort: reset via skip-grant-tables
+    warn "MySQL root access denied — attempting recovery via skip-grant-tables..."
+    systemctl stop mariadb 2>/dev/null || true
+    mysqld_safe --skip-grant-tables --skip-networking &
+    local bg_pid=$!
+    sleep 3
+    if mysql -u root -e "FLUSH PRIVILEGES; ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket; FLUSH PRIVILEGES;" 2>/dev/null; then
+        log "MySQL root auth recovered"
+    else
+        warn "Could not recover MySQL root auth — manual intervention needed"
+    fi
+    kill "$bg_pid" 2>/dev/null || true
+    wait "$bg_pid" 2>/dev/null || true
+    sleep 2
+    systemctl start mariadb 2>/dev/null || true
+    rm -f /etc/pinkpanel/mysql.cnf
+
+    if mysql -u root -e "SELECT 1" &>/dev/null; then
+        log "MySQL root access confirmed"
+    else
+        warn "MySQL root still not accessible — check manually"
+    fi
+}
+
 # ── Ensure required packages ────────────────
 install_missing_packages() {
     local missing=()
@@ -282,6 +332,7 @@ BINDOPTS
 
 install_missing_packages
 fix_bind
+fix_mysql_auth
 
 # ── Run version-specific migrations ────────
 run_migrations "$CURRENT"
