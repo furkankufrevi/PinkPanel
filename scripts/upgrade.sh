@@ -229,6 +229,59 @@ fix_mysql_auth() {
     fi
 }
 
+# ── Ensure phpMyAdmin is installed ──────────
+setup_phpmyadmin() {
+    # Skip if already installed
+    if [[ -d /usr/share/phpmyadmin ]] && [[ -f /etc/nginx/snippets/phpmyadmin.conf ]]; then
+        return
+    fi
+
+    log "Setting up phpMyAdmin..."
+
+    export DEBIAN_FRONTEND=noninteractive
+    if [[ ! -d /usr/share/phpmyadmin ]]; then
+        echo "phpmyadmin phpmyadmin/dbconfig-install boolean false" | debconf-set-selections
+        echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect none" | debconf-set-selections
+        apt-get update -qq
+        apt-get install -y -qq phpmyadmin > /dev/null 2>&1 || {
+            warn "phpMyAdmin package not available — skipping"
+            return
+        }
+    fi
+
+    # Create NGINX snippet
+    cat > /etc/nginx/snippets/phpmyadmin.conf <<'PMA'
+location /phpmyadmin/ {
+    alias /usr/share/phpmyadmin/;
+    index index.php;
+
+    location ~ \.php$ {
+        fastcgi_pass unix:/run/php/php-fpm.sock;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME $request_filename;
+        include fastcgi_params;
+    }
+}
+PMA
+
+    # Find the active PHP-FPM socket
+    local php_sock
+    php_sock=$(ls /run/php/php*-fpm.sock 2>/dev/null | head -1)
+    if [[ -n "$php_sock" ]]; then
+        sed -i "s|unix:/run/php/php-fpm.sock|unix:$php_sock|" /etc/nginx/snippets/phpmyadmin.conf
+    fi
+
+    # Include in default NGINX server block
+    if [[ -f /etc/nginx/sites-available/default ]] && ! grep -q "phpmyadmin" /etc/nginx/sites-available/default; then
+        sed -i '/server_name _;/a\\n\tinclude snippets/phpmyadmin.conf;' /etc/nginx/sites-available/default
+    fi
+
+    # Reload NGINX to pick up phpMyAdmin
+    nginx -t > /dev/null 2>&1 && systemctl reload nginx 2>/dev/null || true
+
+    log "phpMyAdmin configured at /phpmyadmin/"
+}
+
 # ── Ensure required packages ────────────────
 install_missing_packages() {
     local missing=()
@@ -333,6 +386,7 @@ BINDOPTS
 install_missing_packages
 fix_bind
 fix_mysql_auth
+setup_phpmyadmin
 
 # ── Run version-specific migrations ────────
 run_migrations "$CURRENT"

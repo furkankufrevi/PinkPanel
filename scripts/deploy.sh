@@ -375,6 +375,45 @@ enable_services() {
     log "Services enabled"
 }
 
+# ── phpMyAdmin ────────────────────────────────
+
+setup_phpmyadmin() {
+    log "Setting up phpMyAdmin..."
+    export DEBIAN_FRONTEND=noninteractive
+    echo "phpmyadmin phpmyadmin/dbconfig-install boolean false" | debconf-set-selections
+    echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect none" | debconf-set-selections
+    apt-get install -y -qq phpmyadmin > /dev/null 2>&1 || {
+        warn "phpMyAdmin package not available — skipping"
+        return
+    }
+
+    cat > /etc/nginx/snippets/phpmyadmin.conf <<'PMA'
+location /phpmyadmin/ {
+    alias /usr/share/phpmyadmin/;
+    index index.php;
+
+    location ~ \.php$ {
+        fastcgi_pass unix:/run/php/php-fpm.sock;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME $request_filename;
+        include fastcgi_params;
+    }
+}
+PMA
+
+    local php_sock
+    php_sock=$(ls /run/php/php*-fpm.sock 2>/dev/null | head -1)
+    if [[ -n "$php_sock" ]]; then
+        sed -i "s|unix:/run/php/php-fpm.sock|unix:$php_sock|" /etc/nginx/snippets/phpmyadmin.conf
+    fi
+
+    if [[ -f /etc/nginx/sites-available/default ]] && ! grep -q "phpmyadmin" /etc/nginx/sites-available/default; then
+        sed -i '/server_name _;/a\\n\tinclude snippets/phpmyadmin.conf;' /etc/nginx/sites-available/default
+    fi
+
+    log "phpMyAdmin configured at /phpmyadmin/"
+}
+
 # ── Firewall ──────────────────────────────────
 
 setup_firewall() {
@@ -476,6 +515,7 @@ main() {
     secure_mariadb
     setup_bind
     enable_services
+    setup_phpmyadmin
     setup_firewall
     start_pinkpanel
     save_version
