@@ -16,7 +16,6 @@ import (
 )
 
 const githubReleasesURL = "https://api.github.com/repos/furkankufrevi/PinkPanel/releases"
-const githubLatestURL = "https://api.github.com/repos/furkankufrevi/PinkPanel/releases/latest"
 
 type UpdatesHandler struct {
 	DB          *sql.DB
@@ -37,47 +36,54 @@ type githubRelease struct {
 // CheckForUpdates queries GitHub for the latest release and compares with current version.
 func (h *UpdatesHandler) CheckForUpdates(c *fiber.Ctx) error {
 	client := &http.Client{Timeout: 10 * time.Second}
-	req, _ := http.NewRequest("GET", githubLatestURL, nil)
+	// Use /releases (not /releases/latest) because latest skips prereleases
+	req, _ := http.NewRequest("GET", githubReleasesURL+"?per_page=5", nil)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	req.Header.Set("User-Agent", "PinkPanel/"+h.Version)
 
 	resp, err := client.Do(req)
 	if err != nil {
 		return c.JSON(fiber.Map{
-			"current_version":   h.Version,
-			"update_available":  false,
-			"error":             "Failed to check for updates: " + err.Error(),
+			"current_version":  h.Version,
+			"update_available": false,
+			"error":            "Failed to check for updates: " + err.Error(),
 		})
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 404 {
-		// No releases published yet
-		return c.JSON(fiber.Map{
-			"current_version":  h.Version,
-			"update_available": false,
-		})
-	}
 	if resp.StatusCode != 200 {
 		return c.JSON(fiber.Map{
 			"current_version":  h.Version,
 			"update_available": false,
-			"error":            fmt.Sprintf("GitHub API returned %d", resp.StatusCode),
 		})
 	}
 
 	body, _ := io.ReadAll(resp.Body)
-	var release githubRelease
-	if err := json.Unmarshal(body, &release); err != nil {
+	var releases []githubRelease
+	if err := json.Unmarshal(body, &releases); err != nil || len(releases) == 0 {
 		return c.JSON(fiber.Map{
 			"current_version":  h.Version,
 			"update_available": false,
-			"error":            "Failed to parse GitHub response",
+		})
+	}
+
+	// Find the first non-draft release
+	var release *githubRelease
+	for i := range releases {
+		if !releases[i].Draft {
+			release = &releases[i]
+			break
+		}
+	}
+	if release == nil {
+		return c.JSON(fiber.Map{
+			"current_version":  h.Version,
+			"update_available": false,
 		})
 	}
 
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
-	updateAvailable := latestVersion != "" && latestVersion != h.Version && !release.Draft
+	updateAvailable := latestVersion != "" && isNewer(latestVersion, h.Version)
 
 	return c.JSON(fiber.Map{
 		"current_version":  h.Version,
