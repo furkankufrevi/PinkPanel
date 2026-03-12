@@ -30,6 +30,8 @@ const BackupsPage = lazy(() => import("@/pages/backups").then((m) => ({ default:
 const LogsPage = lazy(() => import("@/pages/logs").then((m) => ({ default: m.LogsPage })));
 const SettingsPage = lazy(() => import("@/pages/settings").then((m) => ({ default: m.SettingsPage })));
 const UsersPage = lazy(() => import("@/pages/users").then((m) => ({ default: m.UsersPage })));
+const SecurityPage = lazy(() => import("@/pages/security").then((m) => ({ default: m.SecurityPage })));
+const UpdatesPage = lazy(() => import("@/pages/updates").then((m) => ({ default: m.UpdatesPage })));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -94,6 +96,8 @@ function App() {
                   <Route path="backups" element={<BackupsPage />} />
                   <Route path="logs" element={<LogsPage />} />
                   <Route path="users" element={<UsersPage />} />
+                  <Route path="security" element={<SecurityPage />} />
+                  <Route path="updates" element={<UpdatesPage />} />
                   <Route path="settings" element={<SettingsPage />} />
                 </Route>
               </Routes>

@@ -61,3 +61,10 @@ export async function suspendDomain(id: number): Promise<void> {
 export async function activateDomain(id: number): Promise<void> {
   await api.post(`/domains/${id}/activate`);
 }
+
+export async function toggleModSecurity(
+  domainId: number,
+  enabled: boolean
+): Promise<void> {
+  await api.put(`/domains/${domainId}/modsecurity`, { enabled });
+}

@@ -101,6 +101,8 @@ install_packages() {
         zip \
         unzip \
         ufw \
+        fail2ban \
+        libmodsecurity3 \
         > /dev/null
 
     # PHP — install multiple versions via ondrej PPA (Ubuntu) or sury (Debian)
@@ -511,6 +513,108 @@ PMA
 }
 
 # ---------------------------------------------------------------------------
+# ModSecurity
+# ---------------------------------------------------------------------------
+
+setup_modsecurity() {
+    log "Configuring ModSecurity..."
+
+    # Install NGINX ModSecurity connector if available
+    apt-get install -y -qq libnginx-mod-http-modsecurity > /dev/null 2>&1 || true
+
+    # Create modsecurity config directory
+    mkdir -p /etc/nginx/modsecurity
+
+    # Create main modsecurity config if not present
+    if [[ ! -f /etc/nginx/modsecurity/modsecurity.conf ]]; then
+        if [[ -f /etc/modsecurity/modsecurity.conf-recommended ]]; then
+            cp /etc/modsecurity/modsecurity.conf-recommended /etc/nginx/modsecurity/modsecurity.conf
+            # Switch from DetectionOnly to On
+            sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/nginx/modsecurity/modsecurity.conf
+        else
+            cat > /etc/nginx/modsecurity/modsecurity.conf <<'MODSEC'
+SecRuleEngine On
+SecRequestBodyAccess On
+SecResponseBodyAccess Off
+SecRequestBodyLimit 13107200
+SecRequestBodyNoFilesLimit 131072
+SecResponseBodyLimit 524288
+SecTmpDir /tmp/
+SecDataDir /tmp/
+SecAuditEngine RelevantOnly
+SecAuditLogRelevantStatus "^(?:5|4(?!04))"
+SecAuditLogParts ABIJDEFHZ
+SecAuditLogType Serial
+SecAuditLog /var/log/nginx/modsec_audit.log
+SecArgumentSeparator &
+SecCookieFormat 0
+SecUnicodeMapFile unicode.mapping 20127
+MODSEC
+        fi
+    fi
+
+    # Install OWASP CRS if available
+    if [[ ! -d /etc/nginx/modsecurity/crs ]]; then
+        apt-get install -y -qq modsecurity-crs > /dev/null 2>&1 || true
+        if [[ -d /usr/share/modsecurity-crs ]]; then
+            ln -sf /usr/share/modsecurity-crs /etc/nginx/modsecurity/crs
+            # Include CRS rules in modsecurity config
+            if ! grep -q "crs" /etc/nginx/modsecurity/modsecurity.conf 2>/dev/null; then
+                cat >> /etc/nginx/modsecurity/modsecurity.conf <<'CRS'
+
+# OWASP Core Rule Set
+Include /etc/nginx/modsecurity/crs/rules/*.conf
+CRS
+            fi
+        fi
+    fi
+
+    log "ModSecurity configured"
+}
+
+# Fail2ban
+# ---------------------------------------------------------------------------
+
+setup_fail2ban() {
+    if ! command -v fail2ban-client &>/dev/null; then
+        warn "fail2ban not installed, skipping"
+        return
+    fi
+
+    log "Configuring Fail2ban..."
+
+    # Create PinkPanel filter for panel authentication failures
+    cat > /etc/fail2ban/filter.d/pinkpanel.conf <<'FILTER'
+[Definition]
+failregex = ^.*"POST /api/auth/login".*<HOST>.*401.*$
+ignoreregex =
+FILTER
+
+    # Create PinkPanel jail configuration
+    cat > /etc/fail2ban/jail.d/pinkpanel.conf <<'JAIL'
+[pinkpanel]
+enabled = true
+port = http,https
+filter = pinkpanel
+logpath = /var/log/pinkpanel/server.log
+maxretry = 10
+findtime = 600
+bantime = 3600
+action = %(action_)s
+
+[sshd]
+enabled = true
+maxretry = 5
+findtime = 600
+bantime = 3600
+JAIL
+
+    systemctl enable fail2ban > /dev/null 2>&1
+    systemctl restart fail2ban > /dev/null 2>&1
+
+    log "Fail2ban configured with PinkPanel jail"
+}
+
 # Firewall
 # ---------------------------------------------------------------------------
 
@@ -622,6 +726,8 @@ main() {
     secure_mariadb
     setup_phpmyadmin
     setup_firewall
+    setup_modsecurity
+    setup_fail2ban
     start_services
 
     # Save installed version

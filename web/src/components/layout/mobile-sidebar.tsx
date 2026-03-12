@@ -6,6 +6,8 @@ import {
   FolderOpen,
   Archive,
   ScrollText,
+  Shield,
+  ArrowUpCircle,
   Settings,
 } from "lucide-react";
 import {
@@ -24,6 +26,8 @@ const navItems = [
   { path: "/files", label: "Files", icon: FolderOpen },
   { path: "/backups", label: "Backups", icon: Archive },
   { path: "/logs", label: "Logs", icon: ScrollText },
+  { path: "/security", label: "Security", icon: Shield },
+  { path: "/updates", label: "Updates", icon: ArrowUpCircle },
   { path: "/settings", label: "Settings", icon: Settings },
 ];
 

@@ -65,10 +65,11 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	// Look up admin
 	var id int64
 	var passwordHash, role, status string
+	var totpEnabled int
 	err := h.DB.QueryRow(
-		"SELECT id, password_hash, role, status FROM admins WHERE username = ?",
+		"SELECT id, password_hash, role, status, totp_enabled FROM admins WHERE username = ?",
 		req.Username,
-	).Scan(&id, &passwordHash, &role, &status)
+	).Scan(&id, &passwordHash, &role, &status, &totpEnabled)
 	if err == sql.ErrNoRows {
 		h.recordLoginAttempt(req.Username, c.IP(), false)
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -111,6 +112,23 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 
 	// Successful login — clear failed attempts
 	h.recordLoginAttempt(req.Username, c.IP(), true)
+
+	// If 2FA is enabled, return a short-lived temp token instead of real tokens
+	if totpEnabled == 1 {
+		tempPair, err := h.JWTManager.GenerateTokenPair(id, req.Username, role)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": fiber.Map{
+					"code":    "INTERNAL_ERROR",
+					"message": "Failed to generate tokens",
+				},
+			})
+		}
+		return c.JSON(fiber.Map{
+			"requires_2fa": true,
+			"temp_token":   tempPair.AccessToken,
+		})
+	}
 
 	// Generate tokens
 	tokenPair, err := h.JWTManager.GenerateTokenPair(id, req.Username, role)

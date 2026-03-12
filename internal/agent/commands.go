@@ -109,6 +109,17 @@ func (r *CommandRegistry) registerBuiltins() {
 	// System users
 	r.commands["user_create"] = cmdUserCreate
 	r.commands["user_delete"] = cmdUserDelete
+
+	// System upgrade
+	r.commands["system_upgrade"] = cmdSystemUpgrade
+	r.commands["system_version"] = cmdSystemVersion
+
+	// Fail2ban
+	r.commands["fail2ban_status"] = cmdFail2banStatus
+	r.commands["fail2ban_jail_status"] = cmdFail2banJailStatus
+	r.commands["fail2ban_banned_ips"] = cmdFail2banBannedIPs
+	r.commands["fail2ban_ban_ip"] = cmdFail2banBanIP
+	r.commands["fail2ban_unban_ip"] = cmdFail2banUnbanIP
 }
 
 // ---------- Param types ----------
@@ -1801,6 +1812,258 @@ func cmdUserDelete(params json.RawMessage) (interface{}, error) {
 	}
 
 	return map[string]string{"status": "deleted", "username": p.Username}, nil
+}
+
+// ---------- System Upgrade ----------
+
+func cmdSystemVersion(params json.RawMessage) (interface{}, error) {
+	// Read version from file
+	version := "unknown"
+	data, err := os.ReadFile("/etc/pinkpanel/version")
+	if err == nil {
+		version = strings.TrimSpace(string(data))
+	}
+	return map[string]string{"version": version}, nil
+}
+
+func cmdSystemUpgrade(params json.RawMessage) (interface{}, error) {
+	// Run the upgrade script in the background
+	// The script is fetched from GitHub and run as root
+	upgradeScript := "/opt/pinkpanel/scripts/upgrade.sh"
+
+	// Check if local script exists, otherwise download
+	if _, err := os.Stat(upgradeScript); os.IsNotExist(err) {
+		// Download from GitHub
+		dlCmd := exec.Command("bash", "-c",
+			`curl -fsSL https://raw.githubusercontent.com/furkankufrevi/PinkPanel/master/scripts/upgrade.sh -o /tmp/pinkpanel-upgrade.sh && chmod +x /tmp/pinkpanel-upgrade.sh`)
+		if out, err := dlCmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("failed to download upgrade script: %s", strings.TrimSpace(string(out)))
+		}
+		upgradeScript = "/tmp/pinkpanel-upgrade.sh"
+	}
+
+	// Run upgrade script, capturing output
+	logFile := fmt.Sprintf("/var/log/pinkpanel/upgrade-%s.log", time.Now().Format("20060102-150405"))
+	cmd := exec.Command("bash", "-c", fmt.Sprintf("bash %s > %s 2>&1", upgradeScript, logFile))
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start upgrade: %v", err)
+	}
+
+	// Wait in background goroutine
+	go func() {
+		cmd.Wait()
+	}()
+
+	return map[string]string{
+		"status":   "started",
+		"log_file": logFile,
+	}, nil
+}
+
+// ---------- Fail2ban ----------
+
+func cmdFail2banStatus(params json.RawMessage) (interface{}, error) {
+	out, err := exec.Command("fail2ban-client", "status").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("fail2ban-client status failed: %s", strings.TrimSpace(string(out)))
+	}
+
+	output := string(out)
+	result := map[string]interface{}{
+		"raw": strings.TrimSpace(output),
+	}
+
+	// Parse jail list
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Jail list:") {
+			jailStr := strings.TrimPrefix(line, "Jail list:")
+			jailStr = strings.TrimSpace(jailStr)
+			jails := []string{}
+			for _, j := range strings.Split(jailStr, ",") {
+				j = strings.TrimSpace(j)
+				if j != "" {
+					jails = append(jails, j)
+				}
+			}
+			result["jails"] = jails
+		}
+	}
+
+	return result, nil
+}
+
+type fail2banJailParams struct {
+	Jail string `json:"jail"`
+}
+
+func cmdFail2banJailStatus(params json.RawMessage) (interface{}, error) {
+	var p fail2banJailParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if p.Jail == "" {
+		return nil, fmt.Errorf("jail name is required")
+	}
+	if !safeNameRe.MatchString(p.Jail) {
+		return nil, fmt.Errorf("invalid jail name: %s", p.Jail)
+	}
+
+	out, err := exec.Command("fail2ban-client", "status", p.Jail).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("fail2ban-client status %s failed: %s", p.Jail, strings.TrimSpace(string(out)))
+	}
+
+	output := strings.TrimSpace(string(out))
+	result := map[string]interface{}{
+		"jail": p.Jail,
+		"raw":  output,
+	}
+
+	// Parse key metrics
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "Currently failed:") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				val, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+				result["currently_failed"] = val
+			}
+		}
+		if strings.Contains(line, "Total failed:") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				val, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+				result["total_failed"] = val
+			}
+		}
+		if strings.Contains(line, "Currently banned:") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				val, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+				result["currently_banned"] = val
+			}
+		}
+		if strings.Contains(line, "Total banned:") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				val, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+				result["total_banned"] = val
+			}
+		}
+		if strings.Contains(line, "Banned IP list:") {
+			parts := strings.SplitN(line, ":", 2)
+			ips := []string{}
+			if len(parts) == 2 {
+				for _, ip := range strings.Fields(strings.TrimSpace(parts[1])) {
+					if ip != "" {
+						ips = append(ips, ip)
+					}
+				}
+			}
+			result["banned_ips"] = ips
+		}
+	}
+
+	return result, nil
+}
+
+func cmdFail2banBannedIPs(params json.RawMessage) (interface{}, error) {
+	var p fail2banJailParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	jail := p.Jail
+	if jail == "" {
+		jail = "pinkpanel"
+	}
+	if !safeNameRe.MatchString(jail) {
+		return nil, fmt.Errorf("invalid jail name: %s", jail)
+	}
+
+	out, err := exec.Command("fail2ban-client", "status", jail).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("fail2ban-client status %s failed: %s", jail, strings.TrimSpace(string(out)))
+	}
+
+	ips := []string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "Banned IP list:") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				for _, ip := range strings.Fields(strings.TrimSpace(parts[1])) {
+					if ip != "" {
+						ips = append(ips, ip)
+					}
+				}
+			}
+		}
+	}
+
+	return map[string]interface{}{"jail": jail, "banned_ips": ips}, nil
+}
+
+// ipRe validates IPv4 and IPv6 addresses loosely.
+var ipRe = regexp.MustCompile(`^[0-9a-fA-F.:]+$`)
+
+type fail2banIPParams struct {
+	Jail string `json:"jail"`
+	IP   string `json:"ip"`
+}
+
+func cmdFail2banBanIP(params json.RawMessage) (interface{}, error) {
+	var p fail2banIPParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if p.IP == "" {
+		return nil, fmt.Errorf("ip is required")
+	}
+	if !ipRe.MatchString(p.IP) {
+		return nil, fmt.Errorf("invalid IP address: %s", p.IP)
+	}
+	jail := p.Jail
+	if jail == "" {
+		jail = "pinkpanel"
+	}
+	if !safeNameRe.MatchString(jail) {
+		return nil, fmt.Errorf("invalid jail name: %s", jail)
+	}
+
+	out, err := exec.Command("fail2ban-client", "set", jail, "banip", p.IP).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("fail2ban ban failed: %s", strings.TrimSpace(string(out)))
+	}
+
+	return map[string]string{"status": "banned", "ip": p.IP, "jail": jail}, nil
+}
+
+func cmdFail2banUnbanIP(params json.RawMessage) (interface{}, error) {
+	var p fail2banIPParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if p.IP == "" {
+		return nil, fmt.Errorf("ip is required")
+	}
+	if !ipRe.MatchString(p.IP) {
+		return nil, fmt.Errorf("invalid IP address: %s", p.IP)
+	}
+	jail := p.Jail
+	if jail == "" {
+		jail = "pinkpanel"
+	}
+	if !safeNameRe.MatchString(jail) {
+		return nil, fmt.Errorf("invalid jail name: %s", jail)
+	}
+
+	out, err := exec.Command("fail2ban-client", "set", jail, "unbanip", p.IP).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("fail2ban unban failed: %s", strings.TrimSpace(string(out)))
+	}
+
+	return map[string]string{"status": "unbanned", "ip": p.IP, "jail": jail}, nil
 }
 
 // ---------- Helpers ----------

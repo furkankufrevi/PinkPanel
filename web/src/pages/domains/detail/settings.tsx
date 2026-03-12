@@ -22,7 +22,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { toast } from "sonner";
-import { updateDomain, suspendDomain, activateDomain, deleteDomain } from "@/api/domains";
+import { updateDomain, suspendDomain, activateDomain, deleteDomain, toggleModSecurity } from "@/api/domains";
 import type { Domain } from "@/types/domain";
 import type { AxiosError } from "axios";
 import type { APIError } from "@/types/api";
@@ -160,6 +160,36 @@ export function DomainSettings() {
           >
             {updateMutation.isPending ? "Saving..." : "Save Changes"}
           </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Security</CardTitle>
+          <CardDescription>Web Application Firewall settings</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>ModSecurity WAF</Label>
+              <p className="text-sm text-muted-foreground">
+                Enable Web Application Firewall protection (OWASP CRS rules)
+              </p>
+            </div>
+            <Switch
+              checked={domain.modsecurity_enabled}
+              onCheckedChange={(checked) => {
+                toggleModSecurity(Number(id), checked)
+                  .then(() => {
+                    toast.success(`ModSecurity ${checked ? "enabled" : "disabled"}`);
+                    queryClient.invalidateQueries({ queryKey: ["domain", Number(id)] });
+                  })
+                  .catch((err: any) => {
+                    toast.error(err.response?.data?.error?.message ?? "Failed to toggle ModSecurity");
+                  });
+              }}
+            />
+          </div>
         </CardContent>
       </Card>
 

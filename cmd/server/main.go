@@ -236,6 +236,19 @@ func main() {
 		BcryptCost:  cfg.Security.BcryptCost,
 	}
 
+	// Security handler (Fail2ban)
+	securityHandler := &handlers.SecurityHandler{
+		DB:          database,
+		AgentClient: agentClient,
+	}
+
+	// TOTP handler
+	totpHandler := &handlers.TOTPHandler{
+		DB:         database,
+		JWTManager: jwtManager,
+		BcryptCost: cfg.Security.BcryptCost,
+	}
+
 	// WebSocket hub for real-time dashboard metrics
 	wsHub := ws.NewHub(agentClient)
 
@@ -248,6 +261,7 @@ func main() {
 	api.Post("/setup/admin", setupHandler.CreateAdmin)
 	api.Post("/auth/login", middleware.RateLimit(5, time.Minute), authHandler.Login)
 	api.Post("/auth/refresh", middleware.RateLimit(10, time.Minute), authHandler.Refresh)
+	api.Post("/auth/2fa/verify", middleware.RateLimit(10, time.Minute), totpHandler.Verify)
 
 	// Protected routes
 	protected := api.Group("", middleware.Auth(jwtManager))
@@ -257,6 +271,13 @@ func main() {
 	protected.Get("/auth/profile", authHandler.Profile)
 	protected.Get("/auth/sessions", authHandler.ListSessions)
 	protected.Delete("/auth/sessions/:id", authHandler.RevokeSession)
+
+	// 2FA routes
+	protected.Get("/auth/2fa/status", totpHandler.Status)
+	protected.Post("/auth/2fa/setup", totpHandler.Setup)
+	protected.Post("/auth/2fa/enable", totpHandler.Enable)
+	protected.Post("/auth/2fa/disable", totpHandler.Disable)
+	protected.Post("/auth/2fa/recovery-codes/regenerate", totpHandler.RegenerateRecoveryCodes)
 
 	// User management routes (admin+ only)
 	adminOnly := protected.Group("", middleware.RequireRole("super_admin", "admin"))
@@ -307,6 +328,7 @@ func main() {
 	protected.Delete("/domains/:id/ssl", sslHandler.DeleteCertificate)
 	protected.Put("/domains/:id/ssl/auto-renew", sslHandler.ToggleAutoRenew)
 	protected.Put("/domains/:id/ssl/force-https", sslHandler.ToggleForceHTTPS)
+	protected.Put("/domains/:id/modsecurity", domainHandler.ToggleModSecurity)
 
 	// Database routes
 	protected.Get("/databases", databaseHandler.List)
@@ -352,6 +374,24 @@ func main() {
 	// Settings routes
 	protected.Get("/settings/activity", settingsHandler.ActivityLog)
 	protected.Get("/settings/server-info", settingsHandler.ServerInfo)
+
+	// Updates routes (admin+ only)
+	updatesHandler := &handlers.UpdatesHandler{
+		DB:          database,
+		AgentClient: agentClient,
+		Version:     version,
+	}
+	adminOnly.Get("/updates/check", updatesHandler.CheckForUpdates)
+	adminOnly.Get("/updates/releases", updatesHandler.GetReleases)
+	adminOnly.Post("/updates/upgrade", updatesHandler.TriggerUpgrade)
+	adminOnly.Get("/updates/history", updatesHandler.GetUpgradeHistory)
+
+	// Security routes (admin+ only)
+	adminOnly.Get("/security/fail2ban/status", securityHandler.Fail2banStatus)
+	adminOnly.Get("/security/fail2ban/jails/:jail", securityHandler.Fail2banJailStatus)
+	adminOnly.Get("/security/fail2ban/banned", securityHandler.Fail2banBannedIPs)
+	adminOnly.Post("/security/fail2ban/ban", securityHandler.Fail2banBanIP)
+	adminOnly.Post("/security/fail2ban/unban", securityHandler.Fail2banUnbanIP)
 
 	// File manager routes
 	protected.Get("/domains/:id/files", fileHandler.List)

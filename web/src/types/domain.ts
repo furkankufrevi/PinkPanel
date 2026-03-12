@@ -6,6 +6,7 @@ export interface Domain {
   php_version: string;
   parent_id: number | null;
   separate_dns: boolean;
+  modsecurity_enabled: boolean;
   created_at: string;
   updated_at: string;
 }

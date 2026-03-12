@@ -6,10 +6,12 @@ import {
   FolderOpen,
   Archive,
   ScrollText,
+  Shield,
   Settings,
   PanelLeftClose,
   PanelLeft,
   Users,
+  ArrowUpCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUIStore } from "@/stores/ui";
@@ -31,6 +33,8 @@ const navItems: NavItem[] = [
   { path: "/backups", label: "Backups", icon: Archive },
   { path: "/logs", label: "Logs", icon: ScrollText },
   { path: "/users", label: "Users", icon: Users, adminOnly: true },
+  { path: "/security", label: "Security", icon: Shield, adminOnly: true },
+  { path: "/updates", label: "Updates", icon: ArrowUpCircle, adminOnly: true },
   { path: "/settings", label: "Settings", icon: Settings },
 ];
 

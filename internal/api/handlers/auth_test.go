@@ -33,6 +33,8 @@ func setupAuthTestDB(t *testing.T) *sql.DB {
 		password_hash TEXT NOT NULL,
 		role TEXT NOT NULL DEFAULT 'super_admin',
 		status TEXT NOT NULL DEFAULT 'active',
+		totp_secret TEXT DEFAULT NULL,
+		totp_enabled INTEGER NOT NULL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`)
@@ -49,6 +51,15 @@ func setupAuthTestDB(t *testing.T) *sql.DB {
 		ip_address TEXT NOT NULL,
 		success INTEGER NOT NULL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.Exec(`CREATE TABLE sessions (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+		token_hash TEXT NOT NULL,
+		ip_address TEXT NOT NULL DEFAULT '',
+		user_agent TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		expires_at DATETIME NOT NULL
 	)`)
 	db.Exec(`CREATE TABLE settings (
 		key TEXT PRIMARY KEY,

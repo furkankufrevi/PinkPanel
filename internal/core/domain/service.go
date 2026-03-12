@@ -14,16 +14,17 @@ var domainNameRe = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\
 
 // Domain represents a row in the domains table.
 type Domain struct {
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
-	DocumentRoot string `json:"document_root"`
-	Status       string `json:"status"`
-	PHPVersion   string `json:"php_version"`
-	ParentID     *int64 `json:"parent_id"`
-	SeparateDNS  bool   `json:"separate_dns"`
-	AdminID      *int64 `json:"admin_id"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	ID                   int64  `json:"id"`
+	Name                 string `json:"name"`
+	DocumentRoot         string `json:"document_root"`
+	Status               string `json:"status"`
+	PHPVersion           string `json:"php_version"`
+	ParentID             *int64 `json:"parent_id"`
+	SeparateDNS          bool   `json:"separate_dns"`
+	ModSecurityEnabled   bool   `json:"modsecurity_enabled"`
+	AdminID              *int64 `json:"admin_id"`
+	CreatedAt            string `json:"created_at"`
+	UpdatedAt            string `json:"updated_at"`
 }
 
 // Service provides domain-related database operations.
@@ -31,16 +32,17 @@ type Service struct {
 	DB *sql.DB
 }
 
-const domainColumns = "id, name, document_root, status, php_version, parent_id, separate_dns, admin_id, created_at, updated_at"
+const domainColumns = "id, name, document_root, status, php_version, parent_id, separate_dns, modsecurity_enabled, admin_id, created_at, updated_at"
 
 func scanDomain(row interface{ Scan(...interface{}) error }) (*Domain, error) {
 	d := &Domain{}
-	var separateDNS int
-	err := row.Scan(&d.ID, &d.Name, &d.DocumentRoot, &d.Status, &d.PHPVersion, &d.ParentID, &separateDNS, &d.AdminID, &d.CreatedAt, &d.UpdatedAt)
+	var separateDNS, modsecEnabled int
+	err := row.Scan(&d.ID, &d.Name, &d.DocumentRoot, &d.Status, &d.PHPVersion, &d.ParentID, &separateDNS, &modsecEnabled, &d.AdminID, &d.CreatedAt, &d.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	d.SeparateDNS = separateDNS != 0
+	d.ModSecurityEnabled = modsecEnabled != 0
 	return d, nil
 }
 
@@ -268,6 +270,22 @@ func (s *Service) UpdateSeparateDNS(id int64, separateDNS bool) (*Domain, error)
 	)
 	if err != nil {
 		return nil, fmt.Errorf("updating separate_dns: %w", err)
+	}
+	return s.GetByID(id)
+}
+
+// ToggleModSecurity enables or disables ModSecurity for a domain.
+func (s *Service) ToggleModSecurity(id int64, enabled bool) (*Domain, error) {
+	val := 0
+	if enabled {
+		val = 1
+	}
+	_, err := s.DB.Exec(
+		"UPDATE domains SET modsecurity_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+		val, id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("toggling modsecurity: %w", err)
 	}
 	return s.GetByID(id)
 }

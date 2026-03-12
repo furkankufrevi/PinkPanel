@@ -16,9 +16,10 @@ type NginxVhostData struct {
 	SSLChainPath string
 	ForceHTTPS   bool
 	HTTP2        bool
-	HSTS         bool
-	HSTSMaxAge   int
-	Suspended    bool
+	HSTS               bool
+	HSTSMaxAge         int
+	ModSecurityEnabled bool
+	Suspended          bool
 }
 
 // NginxSuspendedData holds the domain for a suspended vhost.
@@ -72,6 +73,12 @@ server {
     add_header X-Frame-Options SAMEORIGIN always;
     add_header X-Content-Type-Options nosniff always;
     add_header X-XSS-Protection "1; mode=block" always;
+{{- if .ModSecurityEnabled }}
+
+    # ModSecurity WAF
+    modsecurity on;
+    modsecurity_rules_file /etc/nginx/modsecurity/modsecurity.conf;
+{{- end }}
 
     # Gzip
     gzip on;
@@ -113,6 +120,12 @@ server {
     add_header X-Frame-Options SAMEORIGIN always;
     add_header X-Content-Type-Options nosniff always;
     add_header X-XSS-Protection "1; mode=block" always;
+{{- if .ModSecurityEnabled }}
+
+    # ModSecurity WAF
+    modsecurity on;
+    modsecurity_rules_file /etc/nginx/modsecurity/modsecurity.conf;
+{{- end }}
 
     # Gzip
     gzip on;
@@ -165,6 +178,12 @@ server {
     add_header X-Frame-Options SAMEORIGIN always;
     add_header X-Content-Type-Options nosniff always;
     add_header X-XSS-Protection "1; mode=block" always;
+{{- if .ModSecurityEnabled }}
+
+    # ModSecurity WAF
+    modsecurity on;
+    modsecurity_rules_file /etc/nginx/modsecurity/modsecurity.conf;
+{{- end }}
 
     # Gzip
     gzip on;
@@ -206,6 +225,12 @@ server {
     add_header X-Frame-Options SAMEORIGIN always;
     add_header X-Content-Type-Options nosniff always;
     add_header X-XSS-Protection "1; mode=block" always;
+{{- if .ModSecurityEnabled }}
+
+    # ModSecurity WAF
+    modsecurity on;
+    modsecurity_rules_file /etc/nginx/modsecurity/modsecurity.conf;
+{{- end }}
 
     # Gzip
     gzip on;

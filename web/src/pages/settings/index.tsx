@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,6 +18,7 @@ import { useUIStore } from "@/stores/ui";
 import { toast } from "sonner";
 import api from "@/api/client";
 import { getActivityLog, getServerInfo, getSessions, revokeSession } from "@/api/settings";
+import { get2FAStatus, setup2FA, enable2FA, disable2FA, regenerateRecoveryCodes } from "@/api/auth";
 import type { ActivityEntry, SessionEntry } from "@/api/settings";
 import {
   Server,
@@ -27,6 +28,7 @@ import {
   HardDrive,
   MemoryStick,
   Monitor,
+  ShieldCheck,
   X,
 } from "lucide-react";
 
@@ -40,6 +42,8 @@ export function SettingsPage() {
         <AppearanceSettings />
         <Separator />
         <ChangePasswordCard />
+        <Separator />
+        <TwoFactorCard />
         <Separator />
         <ActiveSessionsCard />
         <Separator />
@@ -332,6 +336,245 @@ function ActiveSessionsCard() {
                 )}
               </div>
             ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function TwoFactorCard() {
+  const queryClient = useQueryClient();
+  const [step, setStep] = useState<"idle" | "setup" | "verify" | "codes">("idle");
+  const [qrCode, setQrCode] = useState("");
+  const [secret, setSecret] = useState("");
+  const [verifyCode, setVerifyCode] = useState("");
+  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
+  const [disablePassword, setDisablePassword] = useState("");
+
+  const { data: status, isLoading } = useQuery({
+    queryKey: ["2fa-status"],
+    queryFn: get2FAStatus,
+  });
+
+  const setupMut = useMutation({
+    mutationFn: setup2FA,
+    onSuccess: (data) => {
+      setQrCode(data.qr_code);
+      setSecret(data.secret);
+      setStep("verify");
+    },
+    onError: (err: any) => {
+      toast.error(err.response?.data?.error?.message ?? "Failed to setup 2FA");
+    },
+  });
+
+  const enableMut = useMutation({
+    mutationFn: () => enable2FA(verifyCode),
+    onSuccess: (data) => {
+      setRecoveryCodes(data.recovery_codes);
+      setStep("codes");
+      queryClient.invalidateQueries({ queryKey: ["2fa-status"] });
+      toast.success("Two-factor authentication enabled");
+    },
+    onError: (err: any) => {
+      toast.error(err.response?.data?.error?.message ?? "Invalid code");
+    },
+  });
+
+  const disableMut = useMutation({
+    mutationFn: () => disable2FA(disablePassword),
+    onSuccess: () => {
+      setDisablePassword("");
+      queryClient.invalidateQueries({ queryKey: ["2fa-status"] });
+      toast.success("Two-factor authentication disabled");
+    },
+    onError: (err: any) => {
+      toast.error(err.response?.data?.error?.message ?? "Failed to disable 2FA");
+    },
+  });
+
+  const regenMut = useMutation({
+    mutationFn: regenerateRecoveryCodes,
+    onSuccess: (data) => {
+      setRecoveryCodes(data.recovery_codes);
+      setStep("codes");
+      queryClient.invalidateQueries({ queryKey: ["2fa-status"] });
+    },
+    onError: (err: any) => {
+      toast.error(err.response?.data?.error?.message ?? "Failed to regenerate codes");
+    },
+  });
+
+  if (isLoading) return <Skeleton className="h-40 w-full" />;
+
+  const is2FAEnabled = status?.enabled ?? false;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <ShieldCheck className="h-5 w-5" />
+          Two-Factor Authentication
+        </CardTitle>
+        <CardDescription>
+          {is2FAEnabled
+            ? "Your account is protected with 2FA"
+            : "Add an extra layer of security to your account"}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Already enabled — show disable option */}
+        {is2FAEnabled && step === "idle" && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              <Badge className="bg-green-500/10 text-green-500 border-green-500/20">
+                Enabled
+              </Badge>
+              {status && (
+                <span className="text-xs text-muted-foreground">
+                  {status.recovery_remaining} recovery codes remaining
+                </span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => regenMut.mutate()}
+                disabled={regenMut.isPending}
+              >
+                {regenMut.isPending ? "Regenerating..." : "Regenerate Recovery Codes"}
+              </Button>
+            </div>
+            <Separator />
+            <div className="space-y-2">
+              <Label className="text-sm text-destructive">Disable 2FA</Label>
+              <div className="flex gap-2">
+                <Input
+                  type="password"
+                  placeholder="Enter your password"
+                  value={disablePassword}
+                  onChange={(e) => setDisablePassword(e.target.value)}
+                  className="max-w-xs"
+                />
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={!disablePassword || disableMut.isPending}
+                  onClick={() => disableMut.mutate()}
+                >
+                  {disableMut.isPending ? "Disabling..." : "Disable"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Not enabled — show enable button */}
+        {!is2FAEnabled && step === "idle" && (
+          <Button
+            className="bg-pink-500 hover:bg-pink-600"
+            onClick={() => setupMut.mutate()}
+            disabled={setupMut.isPending}
+          >
+            {setupMut.isPending ? "Setting up..." : "Enable Two-Factor Authentication"}
+          </Button>
+        )}
+
+        {/* Step: QR code + verify */}
+        {step === "verify" && (
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Scan this QR code with your authenticator app (Google Authenticator, Authy, etc.)
+            </p>
+            <div className="flex justify-center">
+              <img src={qrCode} alt="2FA QR Code" className="rounded border p-2 bg-white" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">Manual entry key</Label>
+              <code className="block text-xs bg-muted px-2 py-1 rounded select-all">
+                {secret}
+              </code>
+            </div>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                enableMut.mutate();
+              }}
+              className="space-y-3"
+            >
+              <div className="space-y-2">
+                <Label htmlFor="verify-2fa">Verification Code</Label>
+                <Input
+                  id="verify-2fa"
+                  type="text"
+                  value={verifyCode}
+                  onChange={(e) => setVerifyCode(e.target.value)}
+                  placeholder="000000"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  className="max-w-[200px] text-center text-lg tracking-widest"
+                />
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  type="submit"
+                  className="bg-pink-500 hover:bg-pink-600"
+                  disabled={!verifyCode || enableMut.isPending}
+                >
+                  {enableMut.isPending ? "Verifying..." : "Verify & Enable"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setStep("idle");
+                    setVerifyCode("");
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* Step: Show recovery codes */}
+        {step === "codes" && recoveryCodes.length > 0 && (
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Save these recovery codes in a safe place. Each code can only be used once.
+            </p>
+            <div className="grid grid-cols-2 gap-2 p-3 bg-muted rounded">
+              {recoveryCodes.map((code) => (
+                <code key={code} className="text-sm font-mono">
+                  {code}
+                </code>
+              ))}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                navigator.clipboard.writeText(recoveryCodes.join("\n"));
+                toast.success("Recovery codes copied to clipboard");
+              }}
+            >
+              Copy All
+            </Button>
+            <div>
+              <Button
+                size="sm"
+                onClick={() => {
+                  setStep("idle");
+                  setRecoveryCodes([]);
+                  setVerifyCode("");
+                }}
+              >
+                Done
+              </Button>
+            </div>
           </div>
         )}
       </CardContent>

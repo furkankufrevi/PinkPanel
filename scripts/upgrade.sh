@@ -352,6 +352,8 @@ install_missing_packages() {
     local missing=()
     command -v zip &>/dev/null || missing+=("zip")
     command -v unzip &>/dev/null || missing+=("unzip")
+    command -v fail2ban-client &>/dev/null || missing+=("fail2ban")
+    dpkg -l libmodsecurity3 &>/dev/null 2>&1 || missing+=("libmodsecurity3")
     if (( ${#missing[@]} > 0 )); then
         log "Installing missing packages: ${missing[*]}..."
         export DEBIAN_FRONTEND=noninteractive
@@ -448,11 +450,108 @@ BINDOPTS
     log "BIND9 configuration updated"
 }
 
+# ── Ensure ModSecurity is configured ─────────
+setup_modsecurity() {
+    mkdir -p /etc/nginx/modsecurity
+
+    # Install NGINX ModSecurity connector if not present
+    if ! dpkg -l libnginx-mod-http-modsecurity &>/dev/null 2>&1; then
+        apt-get install -y -qq libnginx-mod-http-modsecurity > /dev/null 2>&1 || true
+    fi
+
+    # Create modsecurity config if missing
+    if [[ ! -f /etc/nginx/modsecurity/modsecurity.conf ]]; then
+        log "Creating ModSecurity config..."
+        if [[ -f /etc/modsecurity/modsecurity.conf-recommended ]]; then
+            cp /etc/modsecurity/modsecurity.conf-recommended /etc/nginx/modsecurity/modsecurity.conf
+            sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/nginx/modsecurity/modsecurity.conf
+        else
+            cat > /etc/nginx/modsecurity/modsecurity.conf <<'MODSEC'
+SecRuleEngine On
+SecRequestBodyAccess On
+SecResponseBodyAccess Off
+SecRequestBodyLimit 13107200
+SecRequestBodyNoFilesLimit 131072
+SecResponseBodyLimit 524288
+SecTmpDir /tmp/
+SecDataDir /tmp/
+SecAuditEngine RelevantOnly
+SecAuditLogRelevantStatus "^(?:5|4(?!04))"
+SecAuditLogParts ABIJDEFHZ
+SecAuditLogType Serial
+SecAuditLog /var/log/nginx/modsec_audit.log
+SecArgumentSeparator &
+SecCookieFormat 0
+SecUnicodeMapFile unicode.mapping 20127
+MODSEC
+        fi
+    fi
+
+    # Install OWASP CRS if missing
+    if [[ ! -d /etc/nginx/modsecurity/crs ]]; then
+        apt-get install -y -qq modsecurity-crs > /dev/null 2>&1 || true
+        if [[ -d /usr/share/modsecurity-crs ]]; then
+            ln -sf /usr/share/modsecurity-crs /etc/nginx/modsecurity/crs
+            if ! grep -q "crs" /etc/nginx/modsecurity/modsecurity.conf 2>/dev/null; then
+                cat >> /etc/nginx/modsecurity/modsecurity.conf <<'CRS'
+
+# OWASP Core Rule Set
+Include /etc/nginx/modsecurity/crs/rules/*.conf
+CRS
+            fi
+        fi
+    fi
+}
+
+# ── Ensure Fail2ban is configured ───────────
+setup_fail2ban() {
+    if ! command -v fail2ban-client &>/dev/null; then
+        return
+    fi
+
+    # Create PinkPanel filter if missing
+    if [[ ! -f /etc/fail2ban/filter.d/pinkpanel.conf ]]; then
+        log "Creating Fail2ban PinkPanel filter..."
+        cat > /etc/fail2ban/filter.d/pinkpanel.conf <<'FILTER'
+[Definition]
+failregex = ^.*"POST /api/auth/login".*<HOST>.*401.*$
+ignoreregex =
+FILTER
+    fi
+
+    # Create PinkPanel jail if missing
+    if [[ ! -f /etc/fail2ban/jail.d/pinkpanel.conf ]]; then
+        log "Creating Fail2ban PinkPanel jail..."
+        cat > /etc/fail2ban/jail.d/pinkpanel.conf <<'JAIL'
+[pinkpanel]
+enabled = true
+port = http,https
+filter = pinkpanel
+logpath = /var/log/pinkpanel/server.log
+maxretry = 10
+findtime = 600
+bantime = 3600
+action = %(action_)s
+
+[sshd]
+enabled = true
+maxretry = 5
+findtime = 600
+bantime = 3600
+JAIL
+    fi
+
+    systemctl enable fail2ban > /dev/null 2>&1
+    systemctl restart fail2ban > /dev/null 2>&1
+}
+
 # ── Always-run fixups (run even when version matches) ──
 install_missing_packages
 fix_bind
 fix_mysql_auth
 setup_phpmyadmin
+setup_modsecurity
+setup_fail2ban
 
 # ── Run version-specific migrations ────────
 if [[ "$SKIP_BINARY" == false ]]; then

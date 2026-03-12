@@ -947,3 +947,109 @@ func provisionDNSZone(dnsSvc *dns.Service, agentClient *agent.Client, domainID i
 		log.Printf("ERROR: dns reload failed after provisioning zone for %s: %v", domainName, err)
 	}
 }
+
+// ToggleModSecurity enables or disables ModSecurity WAF for a domain.
+func (h *DomainHandler) ToggleModSecurity(c *fiber.Ctx) error {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "INVALID_REQUEST",
+				"message": "Invalid domain ID",
+			},
+		})
+	}
+
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "INVALID_REQUEST",
+				"message": "Invalid request body",
+			},
+		})
+	}
+
+	d, err := h.DomainSvc.GetByID(domainID)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "NOT_FOUND",
+				"message": "Domain not found",
+			},
+		})
+	}
+
+	if !checkDomainAccess(c, d) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
+			},
+		})
+	}
+
+	d, err = h.DomainSvc.ToggleModSecurity(domainID, req.Enabled)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "INTERNAL_ERROR",
+				"message": err.Error(),
+			},
+		})
+	}
+
+	// Re-render NGINX vhost
+	vhostData := tmpl.NginxVhostData{
+		Domain:             d.Name,
+		DocumentRoot:       d.DocumentRoot,
+		PHPVersion:         d.PHPVersion,
+		ModSecurityEnabled: req.Enabled,
+	}
+
+	// Preserve SSL settings if present
+	var certPath, keyPath string
+	var chainPath *string
+	var forceHTTPS bool
+	err = h.DB.QueryRow(
+		"SELECT cert_path, key_path, chain_path, force_https FROM ssl_certificates WHERE domain_id = ?", domainID,
+	).Scan(&certPath, &keyPath, &chainPath, &forceHTTPS)
+	if err == nil {
+		vhostData.SSLEnabled = true
+		vhostData.SSLCertPath = certPath
+		vhostData.SSLKeyPath = keyPath
+		if chainPath != nil {
+			vhostData.SSLChainPath = *chainPath
+		}
+		vhostData.ForceHTTPS = forceHTTPS
+		vhostData.HTTP2 = true
+		vhostData.HSTS = true
+		vhostData.HSTSMaxAge = 31536000
+	}
+
+	vhostContent, err := tmpl.RenderNginxVhost(vhostData)
+	if err != nil {
+		log.Printf("WARNING: failed to render vhost for %s: %v", d.Name, err)
+		return c.JSON(fiber.Map{"status": "ok", "modsecurity_enabled": req.Enabled})
+	}
+
+	configPath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", d.Name)
+	enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", d.Name)
+	h.AgentClient.Call("file_write", map[string]any{"path": configPath, "content": vhostContent, "mode": "0644"})
+	h.AgentClient.Call("file_write", map[string]any{"path": enabledPath, "content": vhostContent, "mode": "0644"})
+
+	if _, err := h.AgentClient.Call("nginx_test", nil); err != nil {
+		log.Printf("WARNING: nginx config test failed after toggling ModSecurity for %s: %v", d.Name, err)
+	} else {
+		if _, err := h.AgentClient.Call("nginx_reload", nil); err != nil {
+			log.Printf("ERROR: nginx reload failed after toggling ModSecurity for %s: %v", d.Name, err)
+		}
+	}
+
+	adminID, _ := c.Locals("admin_id").(int64)
+	db.LogActivity(h.DB, adminID, "toggle_modsecurity", "domain", d.ID, fmt.Sprintf("modsecurity=%v", req.Enabled), c.IP())
+
+	return c.JSON(fiber.Map{"status": "ok", "modsecurity_enabled": req.Enabled})
+}
