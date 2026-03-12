@@ -21,6 +21,7 @@ import {
   installSSLCertificate,
   deleteSSLCertificate,
   toggleSSLAutoRenew,
+  toggleForceHTTPS,
   issueLetsEncrypt,
 } from "@/api/ssl";
 import type { AxiosError } from "axios";
@@ -107,6 +108,19 @@ export function DomainSSL() {
     },
   });
 
+  const forceHttpsMutation = useMutation({
+    mutationFn: (enabled: boolean) => toggleForceHTTPS(domainId, enabled),
+    onSuccess: () => {
+      toast.success("HTTPS redirect updated");
+      queryClient.invalidateQueries({ queryKey: ["ssl", domainId] });
+    },
+    onError: (err: AxiosError<APIError>) => {
+      toast.error(
+        err.response?.data?.error?.message ?? "Failed to update HTTPS redirect"
+      );
+    },
+  });
+
   if (isLoading) {
     return (
       <div className="space-y-4 max-w-2xl">
@@ -182,6 +196,19 @@ export function DomainSSL() {
                   </div>
                 </div>
               )}
+            </div>
+
+            <div className="flex items-center justify-between pt-2 border-t">
+              <div>
+                <Label className="text-sm font-medium">Force HTTPS</Label>
+                <p className="text-xs text-muted-foreground">
+                  Redirect all HTTP traffic to HTTPS
+                </p>
+              </div>
+              <Switch
+                checked={ssl.force_https}
+                onCheckedChange={(checked) => forceHttpsMutation.mutate(checked)}
+              />
             </div>
 
             <div className="flex items-center justify-between pt-2 border-t">

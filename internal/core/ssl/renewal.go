@@ -32,7 +32,7 @@ func (s *Service) ListExpiringCerts(within time.Duration) ([]CertForRenewal, err
 	cutoff := time.Now().Add(within).Format(time.RFC3339)
 	rows, err := s.DB.Query(`
 		SELECT c.id, c.domain_id, c.type, c.cert_path, c.key_path, c.chain_path,
-		       c.issuer, c.domains, c.expires_at, c.auto_renew,
+		       c.issuer, c.domains, c.expires_at, c.auto_renew, c.force_https,
 		       d.name, d.document_root, d.php_version
 		FROM ssl_certificates c
 		JOIN domains d ON d.id = c.domain_id
@@ -49,9 +49,10 @@ func (s *Service) ListExpiringCerts(within time.Duration) ([]CertForRenewal, err
 	for rows.Next() {
 		var c CertForRenewal
 		var chainPath, issuer, domains *string
+		var forceHTTPS int
 		err := rows.Scan(
 			&c.ID, &c.DomainID, &c.Type, &c.CertPath, &c.KeyPath, &chainPath,
-			&issuer, &domains, &c.ExpiresAt, &c.AutoRenew,
+			&issuer, &domains, &c.ExpiresAt, &c.AutoRenew, &forceHTTPS,
 			&c.DomainName, &c.DocumentRoot, &c.PHPVersion,
 		)
 		if err != nil {
@@ -60,6 +61,7 @@ func (s *Service) ListExpiringCerts(within time.Duration) ([]CertForRenewal, err
 		c.ChainPath = chainPath
 		c.Issuer = issuer
 		c.Domains = domains
+		c.ForceHTTPS = forceHTTPS == 1
 		certs = append(certs, c)
 	}
 	return certs, nil
@@ -153,17 +155,17 @@ func (r *RenewalService) renewCert(cert CertForRenewal) {
 		chainPath = cp
 	}
 
-	// Update database
-	if _, err := r.SSLSvc.Install(cert.DomainID, "letsencrypt", certPath, keyPath, chainPath, issued.Issuer, issued.Domains, issued.ExpiresAt); err != nil {
+	// Update database (preserve force_https setting)
+	if _, err := r.SSLSvc.Install(cert.DomainID, "letsencrypt", certPath, keyPath, chainPath, issued.Issuer, issued.Domains, issued.ExpiresAt, cert.ForceHTTPS); err != nil {
 		logger.Error().Err(err).Msg("failed to update certificate in database")
 		return
 	}
 
-	// Update NGINX
+	// Update NGINX (preserve force_https setting)
 	vhostContent, err := tmpl.RenderNginxVhost(tmpl.NginxVhostData{
 		Domain: cert.DomainName, DocumentRoot: cert.DocumentRoot, PHPVersion: cert.PHPVersion,
 		SSLEnabled: true, SSLCertPath: certPath, SSLKeyPath: keyPath, SSLChainPath: chainPath,
-		ForceHTTPS: true, HTTP2: true, HSTS: true, HSTSMaxAge: 31536000,
+		ForceHTTPS: cert.ForceHTTPS, HTTP2: true, HSTS: true, HSTSMaxAge: 31536000,
 	})
 	if err != nil {
 		logger.Error().Err(err).Msg("failed to render NGINX vhost")

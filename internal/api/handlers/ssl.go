@@ -40,15 +40,16 @@ func (h *SSLHandler) GetCertificate(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"installed":  true,
-		"id":         cert.ID,
-		"type":       cert.Type,
-		"issuer":     cert.Issuer,
-		"domains":    cert.Domains,
-		"issued_at":  cert.IssuedAt,
-		"expires_at": cert.ExpiresAt,
-		"auto_renew": cert.AutoRenew,
-		"created_at": cert.CreatedAt,
+		"installed":   true,
+		"id":          cert.ID,
+		"type":        cert.Type,
+		"issuer":      cert.Issuer,
+		"domains":     cert.Domains,
+		"issued_at":   cert.IssuedAt,
+		"expires_at":  cert.ExpiresAt,
+		"auto_renew":  cert.AutoRenew,
+		"force_https": cert.ForceHTTPS,
+		"created_at":  cert.CreatedAt,
 	})
 }
 
@@ -109,7 +110,7 @@ func (h *SSLHandler) InstallCertificate(c *fiber.Ctx) error {
 
 	// Store in database — expires_at set to 1 year for custom certs (user should update)
 	expiresAt := time.Now().AddDate(1, 0, 0)
-	cert, err := h.SSLSvc.Install(domainID, "custom", certPath, keyPath, chainPath, "", dom.Name, expiresAt)
+	cert, err := h.SSLSvc.Install(domainID, "custom", certPath, keyPath, chainPath, "", dom.Name, expiresAt, req.ForceHTTPS)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "internal_error", "message": err.Error()}})
 	}
@@ -188,7 +189,7 @@ func (h *SSLHandler) IssueLetsEncrypt(c *fiber.Ctx) error {
 	}
 
 	// Store in database
-	cert, err := h.SSLSvc.Install(domainID, "letsencrypt", certPath, keyPath, chainPath, issued.Issuer, issued.Domains, issued.ExpiresAt)
+	cert, err := h.SSLSvc.Install(domainID, "letsencrypt", certPath, keyPath, chainPath, issued.Issuer, issued.Domains, issued.ExpiresAt, true)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "internal_error", "message": err.Error()}})
 	}
@@ -291,6 +292,56 @@ func (h *SSLHandler) ToggleAutoRenew(c *fiber.Ctx) error {
 	db.LogActivity(h.DB, adminID, "toggle_ssl_autorenew", "domain", domainID, fmt.Sprintf("auto_renew=%v", req.Enabled), c.IP())
 
 	return c.JSON(fiber.Map{"status": "ok", "auto_renew": req.Enabled})
+}
+
+// ToggleForceHTTPS enables or disables HTTP→HTTPS redirect.
+func (h *SSLHandler) ToggleForceHTTPS(c *fiber.Ctx) error {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid domain ID"}})
+	}
+
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid request body"}})
+	}
+
+	dom, err := h.DomainSvc.GetByID(domainID)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "domain not found"}})
+	}
+
+	if !checkDomainAccess(c, dom) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
+			},
+		})
+	}
+
+	cert, err := h.SSLSvc.GetByDomainID(domainID)
+	if err != nil || cert == nil {
+		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "no SSL certificate installed"}})
+	}
+
+	if err := h.SSLSvc.ToggleForceHTTPS(domainID, req.Enabled); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "internal_error", "message": err.Error()}})
+	}
+
+	// Re-render NGINX config with updated force_https setting
+	chainPath := ""
+	if cert.ChainPath != nil {
+		chainPath = *cert.ChainPath
+	}
+	h.updateNginxWithSSL(dom, cert.CertPath, cert.KeyPath, chainPath, req.Enabled)
+
+	adminID, _ := c.Locals("admin_id").(int64)
+	db.LogActivity(h.DB, adminID, "toggle_ssl_force_https", "domain", domainID, fmt.Sprintf("force_https=%v", req.Enabled), c.IP())
+
+	return c.JSON(fiber.Map{"status": "ok", "force_https": req.Enabled})
 }
 
 func (h *SSLHandler) updateNginxWithSSL(dom *domain.Domain, certPath, keyPath, chainPath string, forceHTTPS bool) {

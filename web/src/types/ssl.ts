@@ -7,6 +7,7 @@ export interface SSLCertificate {
   issued_at?: string | null;
   expires_at?: string;
   auto_renew?: boolean;
+  force_https?: boolean;
   created_at?: string;
 }
 

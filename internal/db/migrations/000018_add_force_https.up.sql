@@ -1,0 +1,1 @@
+ALTER TABLE ssl_certificates ADD COLUMN force_https INTEGER NOT NULL DEFAULT 1;

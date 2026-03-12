@@ -38,7 +38,7 @@ import (
 //go:embed all:static
 var embeddedFiles embed.FS
 
-var version = "0.3.3136-alpha"
+var version = "0.3.3137-alpha"
 
 func main() {
 	// Parse flags
@@ -303,6 +303,7 @@ func main() {
 	protected.Post("/domains/:id/ssl/issue", sslHandler.IssueLetsEncrypt)
 	protected.Delete("/domains/:id/ssl", sslHandler.DeleteCertificate)
 	protected.Put("/domains/:id/ssl/auto-renew", sslHandler.ToggleAutoRenew)
+	protected.Put("/domains/:id/ssl/force-https", sslHandler.ToggleForceHTTPS)
 
 	// Database routes
 	protected.Get("/databases", databaseHandler.List)

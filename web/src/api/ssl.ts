@@ -25,6 +25,13 @@ export async function toggleSSLAutoRenew(
   await api.put(`/domains/${domainId}/ssl/auto-renew`, { enabled });
 }
 
+export async function toggleForceHTTPS(
+  domainId: number,
+  enabled: boolean
+): Promise<void> {
+  await api.put(`/domains/${domainId}/ssl/force-https`, { enabled });
+}
+
 export async function issueLetsEncrypt(
   domainId: number,
   includeWww: boolean = true
