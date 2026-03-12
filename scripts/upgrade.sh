@@ -182,6 +182,42 @@ BINDOPTS
 install_missing_packages
 fix_bind
 
+# ── Migrate ACME data dir ──────────────────
+migrate_acme() {
+    local old_dir="/etc/pinkpanel/acme"
+    local new_dir="/var/lib/pinkpanel/acme"
+    mkdir -p "$new_dir"
+    # Move existing ACME account data if it exists in the old location
+    if [[ -d "$old_dir" ]] && ls "$old_dir"/* &>/dev/null 2>&1; then
+        log "Migrating ACME data from $old_dir to $new_dir..."
+        cp -a "$old_dir"/* "$new_dir/" 2>/dev/null || true
+        rm -rf "$old_dir"
+        log "ACME data migrated"
+    fi
+    chown -R pinkpanel:pinkpanel "$new_dir" 2>/dev/null || true
+}
+
+# ── Migrate MySQL to unix_socket auth ──────
+migrate_mysql_auth() {
+    # Switch root to unix_socket auth (agent runs as root, no password needed)
+    if [[ -f /etc/pinkpanel/mysql.cnf ]]; then
+        log "Migrating MySQL root auth to unix_socket..."
+        # Try authenticating with the old password file first
+        mysql --defaults-file=/etc/pinkpanel/mysql.cnf <<-SQL || mysql -u root <<-SQL2 || true
+            ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket;
+            FLUSH PRIVILEGES;
+SQL
+            ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket;
+            FLUSH PRIVILEGES;
+SQL2
+        rm -f /etc/pinkpanel/mysql.cnf
+        log "MySQL auth migrated to unix_socket (removed mysql.cnf)"
+    fi
+}
+
+migrate_acme
+migrate_mysql_auth
+
 # Start services
 log "Starting PinkPanel services..."
 systemctl start pinkpanel-agent

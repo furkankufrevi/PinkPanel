@@ -148,6 +148,7 @@ setup_directories() {
     mkdir -p /var/backups/pinkpanel
     mkdir -p /var/www
     mkdir -p /etc/pinkpanel
+    mkdir -p "$PINKPANEL_DATA/acme"
 
     chown -R "$PINKPANEL_USER:$PINKPANEL_USER" "$PINKPANEL_HOME" "$PINKPANEL_DATA" "$PINKPANEL_LOG" /var/run/pinkpanel /var/backups/pinkpanel
     log "Directories created"
@@ -444,27 +445,17 @@ start_services() {
 # ---------------------------------------------------------------------------
 
 secure_mariadb() {
-    # Set root password and basic security
-    local root_pass
-    root_pass=$(openssl rand -base64 24)
-
+    # Ensure root uses unix_socket auth (default on MariaDB 10.4+)
+    # The agent runs as root, so unix_socket works natively without a password file.
     mysql -u root <<-EOSQL || true
-        ALTER USER 'root'@'localhost' IDENTIFIED BY '${root_pass}';
+        ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket;
         DELETE FROM mysql.user WHERE User='';
         DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
         DROP DATABASE IF EXISTS test;
         DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
         FLUSH PRIVILEGES;
 EOSQL
-
-    # Save root password for the agent
-    cat > /etc/pinkpanel/mysql.cnf <<EOF
-[client]
-user=root
-password=${root_pass}
-EOF
-    chmod 600 /etc/pinkpanel/mysql.cnf
-    log "MariaDB secured (root password saved to /etc/pinkpanel/mysql.cnf)"
+    log "MariaDB secured (using unix_socket auth for root)"
 }
 
 # ---------------------------------------------------------------------------

@@ -105,6 +105,10 @@ func (r *CommandRegistry) registerBuiltins() {
 
 	// Logs
 	r.commands["log_read"] = cmdLogRead
+
+	// System users
+	r.commands["user_create"] = cmdUserCreate
+	r.commands["user_delete"] = cmdUserDelete
 }
 
 // ---------- Param types ----------
@@ -1313,16 +1317,10 @@ func cmdSSLDeleteCert(params json.RawMessage) (interface{}, error) {
 
 // ---------- MySQL commands ----------
 
-// mysqlDefaultsFile is the path to the MySQL credentials file created by the installer.
-const mysqlDefaultsFile = "/etc/pinkpanel/mysql.cnf"
-
-// mysqlArgs prepends --defaults-file if the credentials file exists,
-// so all mysql/mysqldump commands authenticate correctly after secure_mariadb.
+// mysqlArgs prepends -u root for unix_socket authentication.
+// The agent runs as root, so unix_socket auth works natively.
 func mysqlArgs(args ...string) []string {
-	if _, err := os.Stat(mysqlDefaultsFile); err == nil {
-		return append([]string{"--defaults-file=" + mysqlDefaultsFile}, args...)
-	}
-	return args
+	return append([]string{"-u", "root"}, args...)
 }
 
 func cmdMySQLCreateDB(params json.RawMessage) (interface{}, error) {
@@ -1710,6 +1708,91 @@ func cmdLogRead(params json.RawMessage) (interface{}, error) {
 	}
 
 	return map[string]string{"content": content}, nil
+}
+
+// ---------- System User Commands ----------
+
+type userCreateParams struct {
+	Username string `json:"username"`
+	HomeDir  string `json:"home_dir"` // e.g. /home/pp_username
+}
+
+func cmdUserCreate(params json.RawMessage) (interface{}, error) {
+	var p userCreateParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if p.Username == "" {
+		return nil, fmt.Errorf("username is required")
+	}
+	if p.HomeDir == "" {
+		p.HomeDir = "/home/" + p.Username
+	}
+
+	// Validate username (alphanumeric + underscore, starts with letter)
+	validUser := regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+	if !validUser.MatchString(p.Username) {
+		return nil, fmt.Errorf("invalid system username: %s", p.Username)
+	}
+
+	// Create system user with home directory, no login shell
+	out, err := exec.Command("useradd",
+		"--create-home",
+		"--home-dir", p.HomeDir,
+		"--shell", "/usr/sbin/nologin",
+		"--system",
+		p.Username,
+	).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("useradd failed: %s", strings.TrimSpace(string(out)))
+	}
+
+	// Create domains directory under home
+	domainsDir := filepath.Join(p.HomeDir, "domains")
+	if err := os.MkdirAll(domainsDir, 0755); err != nil {
+		return nil, fmt.Errorf("creating domains directory: %w", err)
+	}
+
+	// Set ownership
+	out, err = exec.Command("chown", "-R", p.Username+":"+p.Username, p.HomeDir).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("chown failed: %s", strings.TrimSpace(string(out)))
+	}
+
+	return map[string]string{"status": "created", "username": p.Username, "home_dir": p.HomeDir}, nil
+}
+
+type userDeleteParams struct {
+	Username   string `json:"username"`
+	RemoveHome bool   `json:"remove_home"`
+}
+
+func cmdUserDelete(params json.RawMessage) (interface{}, error) {
+	var p userDeleteParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if p.Username == "" {
+		return nil, fmt.Errorf("username is required")
+	}
+
+	// Safety: never delete root, www-data, or other system users
+	protected := map[string]bool{"root": true, "www-data": true, "nobody": true, "mysql": true, "postfix": true, "dovecot": true}
+	if protected[p.Username] {
+		return nil, fmt.Errorf("cannot delete protected system user: %s", p.Username)
+	}
+
+	args := []string{p.Username}
+	if p.RemoveHome {
+		args = append([]string{"--remove"}, args...)
+	}
+
+	out, err := exec.Command("userdel", args...).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("userdel failed: %s", strings.TrimSpace(string(out)))
+	}
+
+	return map[string]string{"status": "deleted", "username": p.Username}, nil
 }
 
 // ---------- Helpers ----------

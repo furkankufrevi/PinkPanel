@@ -144,7 +144,7 @@ setup_system() {
         useradd -r -s /usr/sbin/nologin -d "$PINKPANEL_HOME" "$PINKPANEL_USER"
     fi
 
-    mkdir -p "$PINKPANEL_HOME/bin" "$PINKPANEL_DATA" "$PINKPANEL_LOG" \
+    mkdir -p "$PINKPANEL_HOME/bin" "$PINKPANEL_DATA" "$PINKPANEL_DATA/acme" "$PINKPANEL_LOG" \
              /var/run/pinkpanel /var/backups/pinkpanel /var/www /etc/pinkpanel
 
     # Stop existing services before replacing binaries (avoids "Text file busy")
@@ -262,23 +262,18 @@ SVC
 secure_mariadb() {
     systemctl enable --now mariadb > /dev/null 2>&1
 
-    if [[ ! -f /etc/pinkpanel/mysql.cnf ]]; then
-        local root_pass=$(openssl rand -base64 24)
-        mysql -u root <<-SQL || true
-            ALTER USER 'root'@'localhost' IDENTIFIED BY '${root_pass}';
-            DELETE FROM mysql.user WHERE User='';
-            DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost','127.0.0.1','::1');
-            DROP DATABASE IF EXISTS test;
-            FLUSH PRIVILEGES;
+    # Ensure root uses unix_socket auth (default on MariaDB 10.4+).
+    # The agent runs as root, so unix_socket works natively without a password file.
+    mysql -u root <<-SQL || true
+        ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket;
+        DELETE FROM mysql.user WHERE User='';
+        DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost','127.0.0.1','::1');
+        DROP DATABASE IF EXISTS test;
+        FLUSH PRIVILEGES;
 SQL
-        cat > /etc/pinkpanel/mysql.cnf <<CNF
-[client]
-user=root
-password=${root_pass}
-CNF
-        chmod 600 /etc/pinkpanel/mysql.cnf
-        log "MariaDB secured"
-    fi
+    # Remove legacy password file if present (no longer needed)
+    rm -f /etc/pinkpanel/mysql.cnf
+    log "MariaDB secured (using unix_socket auth for root)"
 }
 
 # ── BIND config repair helper ────────────────
@@ -434,7 +429,7 @@ print_done() {
     echo -e "  Config:  /etc/pinkpanel/pinkpanel.yml"
     echo -e "  Data:    ${PINKPANEL_DATA}/"
     echo -e "  Logs:    ${PINKPANEL_LOG}/"
-    echo -e "  MySQL:   /etc/pinkpanel/mysql.cnf"
+    echo -e "  MySQL:   unix_socket auth (no password file needed)"
     echo ""
 }
 

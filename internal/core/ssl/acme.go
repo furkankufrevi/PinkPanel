@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	acmeDataDir = "/etc/pinkpanel/acme"
+	acmeDataDir = "/var/lib/pinkpanel/acme"
 	accountFile = "account.json"
 	keyFile     = "account-key.pem"
 )
