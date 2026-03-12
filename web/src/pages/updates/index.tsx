@@ -124,16 +124,16 @@ function UpdateCheckCard() {
                 Upgrade Now
               </Button>
               {data.release_url && (
-                <Button variant="outline" asChild>
-                  <a
-                    href={data.release_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
+                <a
+                  href={data.release_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Button variant="outline">
                     <ExternalLink className="h-4 w-4 mr-2" />
                     View on GitHub
-                  </a>
-                </Button>
+                  </Button>
+                </a>
               )}
             </div>
           </div>
