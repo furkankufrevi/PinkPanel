@@ -19,6 +19,8 @@ import (
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/registration"
 	"github.com/rs/zerolog/log"
+
+	"github.com/pinkpanel/pinkpanel/internal/agent"
 )
 
 const (
@@ -40,13 +42,15 @@ func (u *ACMEUser) GetPrivateKey() crypto.PrivateKey         { return u.key }
 
 // ACMEService handles Let's Encrypt certificate issuance and renewal.
 type ACMEService struct {
-	Email      string
-	Staging    bool // use staging server for testing
-	WebRoot    string
+	Email       string
+	Staging     bool // use staging server for testing
+	AgentClient *agent.Client
 }
 
 // IssueCertificate obtains a Let's Encrypt certificate for the given domains.
 // It uses the HTTP-01 challenge with the webroot method.
+// Challenge files are written via the agent (which runs as root) to avoid
+// read-only filesystem issues under ProtectSystem=strict.
 func (a *ACMEService) IssueCertificate(domains []string, webRoot string) (*IssuedCert, error) {
 	user, err := a.loadOrCreateAccount()
 	if err != nil {
@@ -65,13 +69,13 @@ func (a *ACMEService) IssueCertificate(domains []string, webRoot string) (*Issue
 		return nil, fmt.Errorf("creating ACME client: %w", err)
 	}
 
-	// Use HTTP-01 challenge with webroot
-	challengeDir := filepath.Join(webRoot, ".well-known", "acme-challenge")
-	if err := os.MkdirAll(challengeDir, 0755); err != nil {
-		return nil, fmt.Errorf("creating challenge directory: %w", err)
+	// Use HTTP-01 challenge with agent-backed webroot provider
+	provider := &agentWebrootProvider{
+		root:        webRoot,
+		agentClient: a.AgentClient,
 	}
 
-	err = client.Challenge.SetHTTP01Provider(&webrootProvider{root: webRoot})
+	err = client.Challenge.SetHTTP01Provider(provider)
 	if err != nil {
 		return nil, fmt.Errorf("setting HTTP-01 provider: %w", err)
 	}
@@ -110,7 +114,9 @@ func (a *ACMEService) IssueCertificate(domains []string, webRoot string) (*Issue
 	issuer := "Let's Encrypt"
 	if block, _ := pem.Decode(certificates.Certificate); block != nil {
 		if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
-			issuer = cert.Issuer.Organization[0]
+			if len(cert.Issuer.Organization) > 0 {
+				issuer = cert.Issuer.Organization[0]
+			}
 		}
 	}
 
@@ -209,21 +215,43 @@ func (a *ACMEService) saveAccount(user *ACMEUser) error {
 	return os.WriteFile(filepath.Join(acmeDataDir, accountFile), data, 0600)
 }
 
-// webrootProvider implements the challenge.Provider interface for HTTP-01.
-type webrootProvider struct {
-	root string
+// agentWebrootProvider implements the challenge.Provider interface for HTTP-01.
+// It writes challenge tokens via the agent (which runs as root) so the server
+// process doesn't need write access to document roots.
+type agentWebrootProvider struct {
+	root        string
+	agentClient *agent.Client
 }
 
-func (w *webrootProvider) Present(domain, token, keyAuth string) error {
+func (w *agentWebrootProvider) Present(domain, token, keyAuth string) error {
+	challengePath := filepath.Join(w.root, ".well-known", "acme-challenge", token)
+
+	// Create challenge directory and write token file via agent
 	challengeDir := filepath.Join(w.root, ".well-known", "acme-challenge")
-	if err := os.MkdirAll(challengeDir, 0755); err != nil {
-		return err
+	if _, err := w.agentClient.Call("dir_create", map[string]any{
+		"path": challengeDir,
+		"mode": "0755",
+	}); err != nil {
+		return fmt.Errorf("creating challenge directory via agent: %w", err)
 	}
-	return os.WriteFile(filepath.Join(challengeDir, token), []byte(keyAuth), 0644)
+
+	if _, err := w.agentClient.Call("file_write", map[string]any{
+		"path":    challengePath,
+		"content": keyAuth,
+		"mode":    "0644",
+	}); err != nil {
+		return fmt.Errorf("writing challenge token via agent: %w", err)
+	}
+
+	return nil
 }
 
-func (w *webrootProvider) CleanUp(domain, token, keyAuth string) error {
-	path := filepath.Join(w.root, ".well-known", "acme-challenge", token)
-	os.Remove(path)
+func (w *agentWebrootProvider) CleanUp(domain, token, keyAuth string) error {
+	challengePath := filepath.Join(w.root, ".well-known", "acme-challenge", token)
+	if _, err := w.agentClient.Call("file_delete", map[string]any{
+		"path": challengePath,
+	}); err != nil {
+		log.Warn().Err(err).Str("path", challengePath).Msg("failed to clean up ACME challenge token")
+	}
 	return nil
 }

@@ -129,13 +129,7 @@ func (r *RenewalService) renewCert(cert CertForRenewal) {
 		}
 	}
 
-	// Create challenge dir via agent
-	challengeDir := cert.DocumentRoot + "/.well-known/acme-challenge"
-	r.AgentClient.Call("dir_create", map[string]any{"path": challengeDir, "mode": "0755"})
-	r.AgentClient.Call("set_ownership", map[string]any{
-		"path": cert.DocumentRoot + "/.well-known", "owner": "www-data", "group": "www-data", "recursive": true,
-	})
-
+	// Issue certificate (challenge tokens written via agent in the provider)
 	issued, err := r.ACMESvc.IssueCertificate(domains, cert.DocumentRoot)
 	if err != nil {
 		logger.Error().Err(err).Msg("renewal failed")

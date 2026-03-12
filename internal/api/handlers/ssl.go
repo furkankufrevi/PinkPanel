@@ -162,26 +162,7 @@ func (h *SSLHandler) IssueLetsEncrypt(c *fiber.Ctx) error {
 		domains = append(domains, "www."+dom.Name)
 	}
 
-	// The webroot is the document root — NGINX serves .well-known from here
-	// We need the agent to create the challenge dir since it has write access
-	challengeDir := dom.DocumentRoot + "/.well-known/acme-challenge"
-	if _, err := h.AgentClient.Call("dir_create", map[string]any{
-		"path": challengeDir,
-		"mode": "0755",
-	}); err != nil {
-		log.Warn().Err(err).Msg("failed to create ACME challenge dir via agent")
-	}
-	// Set ownership so ACME can write
-	if _, err := h.AgentClient.Call("set_ownership", map[string]any{
-		"path":      dom.DocumentRoot + "/.well-known",
-		"owner":     "www-data",
-		"group":     "www-data",
-		"recursive": true,
-	}); err != nil {
-		log.Warn().Err(err).Msg("failed to set ownership on .well-known dir")
-	}
-
-	// Issue certificate
+	// Issue certificate (challenge tokens written via agent in the provider)
 	issued, err := h.ACMESvc.IssueCertificate(domains, dom.DocumentRoot)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "acme_error", "message": "Let's Encrypt issuance failed: " + err.Error()}})

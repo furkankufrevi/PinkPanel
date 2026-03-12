@@ -159,7 +159,8 @@ func main() {
 	// SSL service & handler
 	sslSvc := &sslpkg.Service{DB: database}
 	acmeSvc := &sslpkg.ACMEService{
-		Email: "admin@localhost", // will be updated from DB settings
+		Email:       "admin@localhost", // will be updated from DB settings
+		AgentClient: agentClient,
 	}
 	// Try to load admin email from DB for ACME
 	var adminEmail string
