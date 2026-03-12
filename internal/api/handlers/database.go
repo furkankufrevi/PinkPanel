@@ -263,9 +263,15 @@ func (h *DatabaseHandler) PhpMyAdmin(c *fiber.Ctx) error {
 
 	tokenPath := fmt.Sprintf("/var/lib/pinkpanel/pma-tokens/%s.json", token)
 	if _, err := h.AgentClient.Call("dir_create", map[string]any{
-		"path": "/var/lib/pinkpanel/pma-tokens", "mode": "0700",
+		"path": "/var/lib/pinkpanel/pma-tokens", "mode": "0755",
 	}); err != nil {
 		log.Error().Err(err).Msg("failed to create pma-tokens directory")
+	}
+	// chown so www-data (PHP) can read token files
+	if _, err := h.AgentClient.Call("set_ownership", map[string]any{
+		"owner": "www-data", "group": "www-data", "path": "/var/lib/pinkpanel/pma-tokens",
+	}); err != nil {
+		log.Error().Err(err).Msg("failed to chown pma-tokens directory")
 	}
 	if _, err := h.AgentClient.Call("file_write", map[string]any{
 		"path": tokenPath, "content": string(tokenData), "mode": "0644",

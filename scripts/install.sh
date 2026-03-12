@@ -416,17 +416,35 @@ setup_phpmyadmin() {
         return
     }
 
-    # Create token directory
+    # Create token directory (world-readable so www-data PHP can access)
     mkdir -p /var/lib/pinkpanel/pma-tokens
     chown www-data:www-data /var/lib/pinkpanel/pma-tokens
-    chmod 700 /var/lib/pinkpanel/pma-tokens
+    chmod 755 /var/lib/pinkpanel/pma-tokens
 
-    # Configure phpMyAdmin for signon authentication
+    # Patch phpMyAdmin config.inc.php directly for signon auth
+    local pma_config="/etc/phpmyadmin/config.inc.php"
+    if [[ -f "$pma_config" ]]; then
+        sed -i "/auth_type.*=.*'cookie'/d" "$pma_config"
+        sed -i "/auth_type.*=.*'signon'/d" "$pma_config"
+        sed -i "/SignonSession/d" "$pma_config"
+        sed -i "/SignonURL/d" "$pma_config"
+        cat >> "$pma_config" <<'PMACFG'
+
+/* PinkPanel signon auth */
+$cfg['Servers'][1]['auth_type'] = 'signon';
+$cfg['Servers'][1]['SignonSession'] = 'PinkPanelPMA';
+$cfg['Servers'][1]['SignonURL'] = '/phpmyadmin/signon.php';
+$cfg['Servers'][1]['host'] = 'localhost';
+PMACFG
+    fi
+
+    # Also keep conf.d as fallback
+    mkdir -p /etc/phpmyadmin/conf.d
     cat > /etc/phpmyadmin/conf.d/pinkpanel.php <<'PMACONF'
 <?php
 $cfg['Servers'][1]['auth_type'] = 'signon';
 $cfg['Servers'][1]['SignonSession'] = 'PinkPanelPMA';
-$cfg['Servers'][1]['SignonURL'] = 'signon.php';
+$cfg['Servers'][1]['SignonURL'] = '/phpmyadmin/signon.php';
 $cfg['Servers'][1]['host'] = 'localhost';
 PMACONF
 
@@ -456,33 +474,31 @@ $_SESSION['PMA_single_signon_user'] = $data['username'];
 $_SESSION['PMA_single_signon_password'] = $data['password'];
 $_SESSION['PMA_single_signon_host'] = 'localhost';
 
-$db = isset($data['database']) ? urlencode($data['database']) : '';
-header('Location: index.php' . ($db ? '?db=' . $db : ''));
+$db = isset($data['database']) ? $data['database'] : '';
+header('Location: /phpmyadmin/index.php' . ($db ? '?db=' . urlencode($db) : ''));
 exit;
 SIGNON
     chown www-data:www-data /usr/share/phpmyadmin/signon.php
 
     # Create NGINX config for phpMyAdmin
-    cat > /etc/nginx/snippets/phpmyadmin.conf <<'PMA'
+    local php_sock
+    php_sock=$(ls /run/php/php*-fpm.sock 2>/dev/null | head -1)
+    [[ -z "$php_sock" ]] && php_sock="/run/php/php-fpm.sock"
+
+    cat > /etc/nginx/snippets/phpmyadmin.conf <<PMA
 location /phpmyadmin/ {
     alias /usr/share/phpmyadmin/;
     index index.php;
+}
 
-    location ~ \.php$ {
-        fastcgi_pass unix:/run/php/php-fpm.sock;
-        fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME $request_filename;
-        include fastcgi_params;
-    }
+location ~ ^/phpmyadmin/(.+\\.php)\$ {
+    alias /usr/share/phpmyadmin/\$1;
+    fastcgi_pass unix:${php_sock};
+    fastcgi_index index.php;
+    fastcgi_param SCRIPT_FILENAME /usr/share/phpmyadmin/\$1;
+    include fastcgi_params;
 }
 PMA
-
-    # Find the active PHP-FPM socket
-    local php_sock
-    php_sock=$(ls /run/php/php*-fpm.sock 2>/dev/null | head -1)
-    if [[ -n "$php_sock" ]]; then
-        sed -i "s|unix:/run/php/php-fpm.sock|unix:$php_sock|" /etc/nginx/snippets/phpmyadmin.conf
-    fi
 
     # Include in default NGINX server block if not already
     if [[ -f /etc/nginx/sites-available/default ]] && ! grep -q "phpmyadmin" /etc/nginx/sites-available/default; then
