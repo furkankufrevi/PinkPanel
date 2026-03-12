@@ -26,15 +26,18 @@ import (
 	"github.com/pinkpanel/pinkpanel/internal/core/php"
 	"github.com/pinkpanel/pinkpanel/internal/core/backup"
 	"github.com/pinkpanel/pinkpanel/internal/core/ftp"
-	"github.com/pinkpanel/pinkpanel/internal/core/ssl"
+	sslpkg "github.com/pinkpanel/pinkpanel/internal/core/ssl"
 	"github.com/pinkpanel/pinkpanel/internal/db"
 	"github.com/pinkpanel/pinkpanel/internal/logger"
+	ws "github.com/pinkpanel/pinkpanel/internal/websocket"
+
+	fiberws "github.com/gofiber/websocket/v2"
 )
 
 //go:embed all:static
 var embeddedFiles embed.FS
 
-var version = "dev"
+var version = "0.2.0-alpha"
 
 func main() {
 	// Parse flags
@@ -153,12 +156,21 @@ func main() {
 	}
 
 	// SSL service & handler
-	sslSvc := &ssl.Service{DB: database}
+	sslSvc := &sslpkg.Service{DB: database}
+	acmeSvc := &sslpkg.ACMEService{
+		Email: "admin@localhost", // will be updated from DB settings
+	}
+	// Try to load admin email from DB for ACME
+	var adminEmail string
+	if err := database.QueryRow(`SELECT email FROM admins LIMIT 1`).Scan(&adminEmail); err == nil && adminEmail != "" {
+		acmeSvc.Email = adminEmail
+	}
 	sslHandler := &handlers.SSLHandler{
 		DB:          database,
 		SSLSvc:      sslSvc,
 		DomainSvc:   domainSvc,
 		AgentClient: agentClient,
+		ACMESvc:     acmeSvc,
 	}
 
 	// Database service & handler
@@ -180,6 +192,7 @@ func main() {
 
 	// Backup service & handler
 	backupSvc := &backup.Service{DB: database}
+	scheduleSvc := &backup.ScheduleService{DB: database}
 	backupHandler := &handlers.BackupHandler{
 		DB:          database,
 		BackupSvc:   backupSvc,
@@ -209,6 +222,9 @@ func main() {
 		AgentClient: agentClient,
 	}
 
+	// WebSocket hub for real-time dashboard metrics
+	wsHub := ws.NewHub(agentClient)
+
 	// API routes
 	api := app.Group("/api")
 
@@ -224,6 +240,15 @@ func main() {
 	protected.Get("/health/detailed", healthHandler.HealthDetailed)
 	protected.Post("/auth/logout", authHandler.Logout)
 	protected.Post("/auth/change-password", authHandler.ChangePassword)
+
+	// WebSocket route for real-time metrics (uses Upgrade middleware)
+	api.Use("/dashboard/live", func(c *fiber.Ctx) error {
+		if fiberws.IsWebSocketUpgrade(c) {
+			return c.Next()
+		}
+		return fiber.ErrUpgradeRequired
+	})
+	api.Get("/dashboard/live", fiberws.New(wsHub.HandleConnection))
 
 	// Domain routes
 	protected.Get("/domains", domainHandler.List)
@@ -245,10 +270,12 @@ func main() {
 	protected.Get("/php/versions", phpHandler.GetVersions)
 	protected.Get("/domains/:id/php", phpHandler.GetDomainPHP)
 	protected.Put("/domains/:id/php", phpHandler.UpdateDomainPHP)
+	protected.Get("/domains/:id/php/info", phpHandler.GetPHPInfo)
 
 	// SSL routes
 	protected.Get("/domains/:id/ssl", sslHandler.GetCertificate)
 	protected.Post("/domains/:id/ssl", sslHandler.InstallCertificate)
+	protected.Post("/domains/:id/ssl/issue", sslHandler.IssueLetsEncrypt)
 	protected.Delete("/domains/:id/ssl", sslHandler.DeleteCertificate)
 	protected.Put("/domains/:id/ssl/auto-renew", sslHandler.ToggleAutoRenew)
 
@@ -272,12 +299,25 @@ func main() {
 	protected.Get("/backups/:id", backupHandler.Get)
 	protected.Post("/backups", backupHandler.Create)
 	protected.Delete("/backups/:id", backupHandler.Delete)
+	protected.Get("/backups/:id/download", backupHandler.Download)
 	protected.Post("/backups/:id/restore", backupHandler.Restore)
+
+	// Backup schedule routes
+	scheduleHandler := &handlers.BackupScheduleHandler{
+		DB:          database,
+		ScheduleSvc: scheduleSvc,
+	}
+	protected.Get("/backup-schedules", scheduleHandler.List)
+	protected.Get("/backup-schedules/:id", scheduleHandler.Get)
+	protected.Post("/backup-schedules", scheduleHandler.Create)
+	protected.Put("/backup-schedules/:id", scheduleHandler.Update)
+	protected.Delete("/backup-schedules/:id", scheduleHandler.Delete)
 
 	// Log routes
 	protected.Get("/logs/sources", logHandler.Sources)
 	protected.Get("/logs/system", logHandler.SystemLogs)
 	protected.Get("/domains/:id/logs", logHandler.DomainLogs)
+	protected.Get("/domains/:id/logs/download", logHandler.DownloadDomainLog)
 
 	// Settings routes
 	protected.Get("/settings/activity", settingsHandler.ActivityLog)
@@ -328,6 +368,26 @@ func main() {
 		NotFoundFile: "index.html",
 	}))
 
+	// Start SSL auto-renewal service
+	renewalSvc := &sslpkg.RenewalService{
+		SSLSvc:      sslSvc,
+		ACMESvc:     acmeSvc,
+		AgentClient: agentClient,
+	}
+	renewalSvc.Start()
+
+	// Start backup scheduler
+	backupScheduler := &backup.BackupScheduler{
+		ScheduleSvc: scheduleSvc,
+		BackupSvc:   backupSvc,
+		AgentClient: agentClient,
+		DomainDB:    database,
+	}
+	backupScheduler.Start()
+
+	// Start WebSocket hub
+	wsHub.Start()
+
 	// Agent heartbeat
 	stopHeartbeat := make(chan struct{})
 	heartbeatCh := agentClient.Heartbeat(30*time.Second, stopHeartbeat)
@@ -346,6 +406,9 @@ func main() {
 	go func() {
 		<-quit
 		log.Info().Msg("shutting down gracefully...")
+		wsHub.Stop()
+		renewalSvc.Stop()
+		backupScheduler.Stop()
 		close(stopHeartbeat)
 		agentClient.Close()
 		if err := app.ShutdownWithTimeout(30 * time.Second); err != nil {

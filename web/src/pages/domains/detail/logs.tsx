@@ -6,8 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getDomainLogs } from "@/api/logs";
-import { ScrollText, RefreshCw, Search } from "lucide-react";
+import { getDomainLogs, downloadDomainLog } from "@/api/logs";
+import { toast } from "sonner";
+import { ScrollText, RefreshCw, Search, Download } from "lucide-react";
 
 const LOG_TYPES = [
   { key: "access", label: "Access" },
@@ -34,17 +35,33 @@ export function DomainLogs() {
     <div className="space-y-4 max-w-4xl">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-medium">Logs</h3>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => refetch()}
-          disabled={isFetching}
-        >
-          <RefreshCw
-            className={`h-4 w-4 mr-1 ${isFetching ? "animate-spin" : ""}`}
-          />
-          Refresh
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              toast.promise(downloadDomainLog(domainId, logType), {
+                loading: "Preparing download...",
+                success: "Download started",
+                error: "Failed to download log",
+              });
+            }}
+          >
+            <Download className="h-4 w-4 mr-1" />
+            Download
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => refetch()}
+            disabled={isFetching}
+          >
+            <RefreshCw
+              className={`h-4 w-4 mr-1 ${isFetching ? "animate-spin" : ""}`}
+            />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {/* Controls */}

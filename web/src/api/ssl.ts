@@ -24,3 +24,13 @@ export async function toggleSSLAutoRenew(
 ): Promise<void> {
   await api.put(`/domains/${domainId}/ssl/auto-renew`, { enabled });
 }
+
+export async function issueLetsEncrypt(
+  domainId: number,
+  includeWww: boolean = true
+): Promise<SSLCertificate> {
+  const { data } = await api.post(`/domains/${domainId}/ssl/issue`, {
+    include_www: includeWww,
+  });
+  return data;
+}

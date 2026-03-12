@@ -21,10 +21,11 @@ import {
   installSSLCertificate,
   deleteSSLCertificate,
   toggleSSLAutoRenew,
+  issueLetsEncrypt,
 } from "@/api/ssl";
 import type { AxiosError } from "axios";
 import type { APIError } from "@/types/api";
-import { ShieldCheck, ShieldX, Upload, Trash2 } from "lucide-react";
+import { ShieldCheck, ShieldX, Upload, Trash2, Zap, Loader2 } from "lucide-react";
 
 export function DomainSSL() {
   const { id } = useParams<{ id: string }>();
@@ -77,6 +78,19 @@ export function DomainSSL() {
     onError: (err: AxiosError<APIError>) => {
       toast.error(
         err.response?.data?.error?.message ?? "Failed to remove certificate"
+      );
+    },
+  });
+
+  const letsEncryptMutation = useMutation({
+    mutationFn: () => issueLetsEncrypt(domainId, true),
+    onSuccess: () => {
+      toast.success("Let's Encrypt certificate issued successfully");
+      queryClient.invalidateQueries({ queryKey: ["ssl", domainId] });
+    },
+    onError: (err: AxiosError<APIError>) => {
+      toast.error(
+        err.response?.data?.error?.message ?? "Failed to issue Let's Encrypt certificate"
       );
     },
   });
@@ -204,13 +218,25 @@ export function DomainSSL() {
           </CardContent>
         )}
         {!isInstalled && (
-          <CardContent>
+          <CardContent className="flex gap-2">
             <Button
-              onClick={() => setShowInstall(true)}
+              onClick={() => letsEncryptMutation.mutate()}
+              disabled={letsEncryptMutation.isPending}
               className="bg-pink-500 hover:bg-pink-600"
             >
+              {letsEncryptMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              ) : (
+                <Zap className="h-4 w-4 mr-1" />
+              )}
+              {letsEncryptMutation.isPending ? "Issuing..." : "Issue Let's Encrypt"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setShowInstall(true)}
+            >
               <Upload className="h-4 w-4 mr-1" />
-              Install Custom Certificate
+              Custom Certificate
             </Button>
           </CardContent>
         )}

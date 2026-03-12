@@ -21,6 +21,7 @@ type SSLHandler struct {
 	SSLSvc      *ssl.Service
 	DomainSvc   *domain.Service
 	AgentClient *agent.Client
+	ACMESvc     *ssl.ACMEService
 }
 
 // GetCertificate returns the SSL certificate for a domain.
@@ -115,6 +116,98 @@ func (h *SSLHandler) InstallCertificate(c *fiber.Ctx) error {
 		"id":         cert.ID,
 		"type":       cert.Type,
 		"expires_at": cert.ExpiresAt,
+	})
+}
+
+// IssueLetsEncrypt obtains a Let's Encrypt certificate via ACME HTTP-01.
+func (h *SSLHandler) IssueLetsEncrypt(c *fiber.Ctx) error {
+	if h.ACMESvc == nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "not_configured", "message": "ACME service is not configured — set admin email in settings"}})
+	}
+
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid domain ID"}})
+	}
+
+	dom, err := h.DomainSvc.GetByID(domainID)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "domain not found"}})
+	}
+
+	// Build domain list: primary + www
+	domains := []string{dom.Name}
+	var req struct {
+		IncludeWWW bool `json:"include_www"`
+	}
+	if err := c.BodyParser(&req); err == nil && req.IncludeWWW {
+		domains = append(domains, "www."+dom.Name)
+	}
+
+	// The webroot is the document root — NGINX serves .well-known from here
+	// We need the agent to create the challenge dir since it has write access
+	challengeDir := dom.DocumentRoot + "/.well-known/acme-challenge"
+	if _, err := h.AgentClient.Call("dir_create", map[string]any{
+		"path": challengeDir,
+		"mode": "0755",
+	}); err != nil {
+		log.Warn().Err(err).Msg("failed to create ACME challenge dir via agent")
+	}
+	// Set ownership so ACME can write
+	if _, err := h.AgentClient.Call("set_ownership", map[string]any{
+		"path":      dom.DocumentRoot + "/.well-known",
+		"owner":     "www-data",
+		"group":     "www-data",
+		"recursive": true,
+	}); err != nil {
+		log.Warn().Err(err).Msg("failed to set ownership on .well-known dir")
+	}
+
+	// Issue certificate
+	issued, err := h.ACMESvc.IssueCertificate(domains, dom.DocumentRoot)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "acme_error", "message": "Let's Encrypt issuance failed: " + err.Error()}})
+	}
+
+	// Write cert files via agent
+	resp, err := h.AgentClient.Call("ssl_write_cert", map[string]any{
+		"domain": dom.Name,
+		"cert":   issued.Certificate,
+		"key":    issued.PrivateKey,
+		"chain":  issued.IssuerCert,
+	})
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "agent_error", "message": "failed to write certificate files: " + err.Error()}})
+	}
+
+	result, _ := resp.Result.(map[string]interface{})
+	certPath, _ := result["cert_path"].(string)
+	keyPath, _ := result["key_path"].(string)
+	chainPath := ""
+	if cp, ok := result["chain_path"].(string); ok {
+		chainPath = cp
+	}
+
+	// Store in database
+	cert, err := h.SSLSvc.Install(domainID, "letsencrypt", certPath, keyPath, chainPath, issued.Issuer, issued.Domains, issued.ExpiresAt)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "internal_error", "message": err.Error()}})
+	}
+
+	// Update NGINX with SSL
+	h.updateNginxWithSSL(dom, certPath, keyPath, chainPath, true)
+
+	adminID, _ := c.Locals("admin_id").(int64)
+	db.LogActivity(h.DB, adminID, "issue_ssl", "domain", domainID, fmt.Sprintf("Let's Encrypt for %s", issued.Domains), c.IP())
+
+	return c.Status(201).JSON(fiber.Map{
+		"installed":  true,
+		"id":         cert.ID,
+		"type":       "letsencrypt",
+		"issuer":     issued.Issuer,
+		"domains":    issued.Domains,
+		"expires_at": issued.ExpiresAt,
+		"auto_renew": true,
 	})
 }
 

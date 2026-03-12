@@ -29,6 +29,23 @@ export async function getDomainLogs(
   return data;
 }
 
+export async function downloadDomainLog(domainId: number, type: string = "access") {
+  const response = await api.get(`/domains/${domainId}/logs/download`, {
+    params: { type },
+    responseType: "blob",
+  });
+  const url = window.URL.createObjectURL(new Blob([response.data]));
+  const link = document.createElement("a");
+  link.href = url;
+  const disposition = response.headers["content-disposition"];
+  const match = disposition?.match(/filename="?([^"]+)"?/);
+  link.download = match?.[1] ?? `log-${type}.log`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 export async function getSystemLogs(
   type: string = "syslog",
   lines: number = 100,

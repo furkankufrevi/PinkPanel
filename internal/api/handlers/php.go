@@ -125,3 +125,28 @@ func (h *PHPHandler) UpdateDomainPHP(c *fiber.Ctx) error {
 
 	return c.JSON(settings)
 }
+
+// GetPHPInfo returns PHP configuration info for a domain.
+func (h *PHPHandler) GetPHPInfo(c *fiber.Ctx) error {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid domain ID"}})
+	}
+
+	dom, err := h.DomainSvc.GetByID(domainID)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "domain not found"}})
+	}
+
+	resp, err := h.AgentClient.Call("php_info", map[string]any{
+		"version": dom.PHPVersion,
+	})
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "agent_error", "message": "failed to get PHP info: " + err.Error()}})
+	}
+
+	return c.JSON(fiber.Map{
+		"version": dom.PHPVersion,
+		"info":    resp.Result,
+	})
+}

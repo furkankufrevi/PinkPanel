@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/rs/zerolog/log"
 
 	"github.com/pinkpanel/pinkpanel/internal/agent"
 	"github.com/pinkpanel/pinkpanel/internal/core/domain"
@@ -94,6 +96,45 @@ func (h *LogHandler) DomainLogs(c *fiber.Ctx) error {
 		"path":     logPath,
 		"content":  resp.Result,
 	})
+}
+
+// DownloadDomainLog serves a domain log file for download.
+func (h *LogHandler) DownloadDomainLog(c *fiber.Ctx) error {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid domain ID"}})
+	}
+
+	dom, err := h.DomainSvc.GetByID(domainID)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "domain not found"}})
+	}
+
+	logType := c.Query("type", "access")
+	source, ok := logSources[logType]
+	if !ok {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": fmt.Sprintf("unknown log type: %s", logType)}})
+	}
+
+	logPath := source.PathFn(dom.Name)
+
+	// Copy log file to tmp so server can access it
+	tmpPath := fmt.Sprintf("/tmp/pinkpanel-log-dl-%d.log", time.Now().UnixNano())
+	if _, err := h.AgentClient.Call("file_copy", map[string]any{"source": logPath, "dest": tmpPath}); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "agent_error", "message": "failed to read log file: " + err.Error()}})
+	}
+	if _, err := h.AgentClient.Call("set_permissions", map[string]any{"path": tmpPath, "mode": "644"}); err != nil {
+		log.Error().Err(err).Msg("failed to set permissions on temp log file")
+	}
+	defer func() {
+		h.AgentClient.Call("file_delete", map[string]any{"path": tmpPath, "recursive": false})
+	}()
+
+	fileName := fmt.Sprintf("%s.%s.log", dom.Name, logType)
+	c.Set("Content-Type", "text/plain")
+	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileName))
+
+	return c.SendFile(tmpPath)
 }
 
 // SystemLogs reads system-level logs.

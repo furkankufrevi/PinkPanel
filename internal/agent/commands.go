@@ -77,6 +77,7 @@ func (r *CommandRegistry) registerBuiltins() {
 	r.commands["php_list_versions"] = cmdPHPListVersions
 	r.commands["php_write_pool"] = cmdPHPWritePool
 	r.commands["php_reload"] = cmdPHPReload
+	r.commands["php_info"] = cmdPHPInfo
 
 	// SSL
 	r.commands["ssl_write_cert"] = cmdSSLWriteCert
@@ -1223,6 +1224,39 @@ func cmdPHPReload(params json.RawMessage) (interface{}, error) {
 		return nil, fmt.Errorf("php-fpm reload: %s", strings.TrimSpace(string(out)))
 	}
 	return map[string]string{"status": "ok"}, nil
+}
+
+func cmdPHPInfo(params json.RawMessage) (interface{}, error) {
+	var p struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if !allowedPHPVersionRe.MatchString(p.Version) {
+		return nil, fmt.Errorf("invalid PHP version: %s", p.Version)
+	}
+
+	phpBin := fmt.Sprintf("php%s", p.Version)
+	out, err := exec.Command(phpBin, "-i").CombinedOutput()
+	if err != nil {
+		// Fallback to generic php
+		out, err = exec.Command("php", "-i").CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("php -i failed: %s", strings.TrimSpace(string(out)))
+		}
+	}
+
+	// Also get loaded modules
+	modOut, _ := exec.Command(phpBin, "-m").CombinedOutput()
+	if len(modOut) == 0 {
+		modOut, _ = exec.Command("php", "-m").CombinedOutput()
+	}
+
+	return map[string]string{
+		"info":       string(out),
+		"extensions": string(modOut),
+	}, nil
 }
 
 // ---------- SSL commands ----------

@@ -172,6 +172,48 @@ func (h *BackupHandler) Delete(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"status": "ok"})
 }
 
+// Download serves a backup file for download.
+func (h *BackupHandler) Download(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid backup ID"}})
+	}
+
+	b, err := h.BackupSvc.GetByID(id)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": err.Error()}})
+	}
+	if b.Status != "completed" {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "validation_error", "message": "can only download completed backups"}})
+	}
+
+	// Copy backup to a temp file the server process can read
+	tmpPath := fmt.Sprintf("/tmp/pinkpanel-backup-dl-%d-%d.tar.gz", id, time.Now().UnixNano())
+	if _, err := h.AgentClient.Call("file_copy", map[string]any{
+		"source": b.FilePath,
+		"dest":   tmpPath,
+	}); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "agent_error", "message": "failed to prepare backup for download: " + err.Error()}})
+	}
+	// Make temp file readable by server process
+	if _, err := h.AgentClient.Call("set_permissions", map[string]any{
+		"path": tmpPath,
+		"mode": "644",
+	}); err != nil {
+		log.Error().Err(err).Msg("failed to set permissions on temp backup file")
+	}
+	// Clean up temp file after response
+	defer func() {
+		h.AgentClient.Call("file_delete", map[string]any{"path": tmpPath, "recursive": false})
+	}()
+
+	fileName := filepath.Base(b.FilePath)
+	c.Set("Content-Type", "application/gzip")
+	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileName))
+
+	return c.SendFile(tmpPath)
+}
+
 // Restore initiates a backup restore.
 func (h *BackupHandler) Restore(c *fiber.Ctx) error {
 	id, err := strconv.ParseInt(c.Params("id"), 10, 64)

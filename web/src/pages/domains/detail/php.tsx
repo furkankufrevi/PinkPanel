@@ -19,10 +19,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { getDomainPHP, updateDomainPHP, getPHPVersions } from "@/api/php";
+import { getDomainPHP, updateDomainPHP, getPHPVersions, getPHPInfo } from "@/api/php";
 import type { AxiosError } from "axios";
 import type { APIError } from "@/types/api";
+import { Info } from "lucide-react";
 
 const phpDirectives = [
   { key: "upload_max_filesize", label: "Upload Max Filesize", placeholder: "64M" },
@@ -140,6 +142,80 @@ export function DomainPHP() {
       >
         {updateMutation.isPending ? "Saving..." : "Save PHP Settings"}
       </Button>
+
+      <PHPInfoCard domainId={domainId} />
     </div>
+  );
+}
+
+function PHPInfoCard({ domainId }: { domainId: number }) {
+  const [show, setShow] = useState(false);
+
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ["php-info", domainId],
+    queryFn: () => getPHPInfo(domainId),
+    enabled: false,
+  });
+
+  function handleToggle() {
+    if (!show && !data) {
+      refetch();
+    }
+    setShow(!show);
+  }
+
+  const extensions = data?.info?.extensions
+    ?.split("\n")
+    .filter((l) => l.trim() && !l.startsWith("["))
+    ?? [];
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Info className="h-4 w-4" />
+              PHP Info
+            </CardTitle>
+            <CardDescription>
+              View PHP configuration and loaded extensions
+            </CardDescription>
+          </div>
+          <Button variant="outline" size="sm" onClick={handleToggle}>
+            {show ? "Hide" : "Show"}
+          </Button>
+        </div>
+      </CardHeader>
+      {show && (
+        <CardContent>
+          {isLoading ? (
+            <Skeleton className="h-32 w-full" />
+          ) : data ? (
+            <div className="space-y-4">
+              <div>
+                <Label className="text-sm font-medium">Loaded Extensions</Label>
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {extensions.map((ext) => (
+                    <Badge key={ext} variant="outline" className="text-xs">
+                      {ext.trim()}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <Label className="text-sm font-medium">Full PHP Info</Label>
+                <pre className="mt-2 max-h-[400px] overflow-auto text-xs bg-muted p-3 rounded border font-mono whitespace-pre-wrap">
+                  {data.info?.info?.slice(0, 10000)}
+                  {(data.info?.info?.length ?? 0) > 10000 && "\n\n... (truncated)"}
+                </pre>
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Failed to load PHP info</p>
+          )}
+        </CardContent>
+      )}
+    </Card>
   );
 }

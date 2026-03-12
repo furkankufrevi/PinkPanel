@@ -22,3 +22,13 @@ export async function updateDomainPHP(
   const { data } = await api.put(`/domains/${domainId}/php`, req);
   return data;
 }
+
+export interface PHPInfo {
+  version: string;
+  info: { info: string; extensions: string };
+}
+
+export async function getPHPInfo(domainId: number): Promise<PHPInfo> {
+  const { data } = await api.get(`/domains/${domainId}/php/info`);
+  return data;
+}
