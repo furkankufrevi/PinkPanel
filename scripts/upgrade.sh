@@ -330,10 +330,13 @@ location ~ ^/phpmyadmin/(.+\\.php)\$ {
 }
 PMA
 
-    # Include in default NGINX server block
-    if [[ -f /etc/nginx/sites-available/default ]] && ! grep -q "phpmyadmin" /etc/nginx/sites-available/default; then
-        sed -i '/server_name _;/a\\n\tinclude snippets/phpmyadmin.conf;' /etc/nginx/sites-available/default
-    fi
+    # Include in default NGINX server block (both sites-available and sites-enabled,
+    # since sites-enabled may be a separate file instead of a symlink)
+    for f in /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default; do
+        if [[ -f "$f" ]] && ! grep -q "phpmyadmin" "$f"; then
+            sed -i '/server_name _;/a\\n\tinclude snippets/phpmyadmin.conf;' "$f"
+        fi
+    done
 
     # Reload NGINX
     nginx -t > /dev/null 2>&1 && systemctl reload nginx 2>/dev/null || true

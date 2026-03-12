@@ -500,10 +500,12 @@ location ~ ^/phpmyadmin/(.+\\.php)\$ {
 }
 PMA
 
-    # Include in default NGINX server block if not already
-    if [[ -f /etc/nginx/sites-available/default ]] && ! grep -q "phpmyadmin" /etc/nginx/sites-available/default; then
-        sed -i '/server_name _;/a\\n\tinclude snippets/phpmyadmin.conf;' /etc/nginx/sites-available/default
-    fi
+    # Include in default NGINX server block (both sites-available and sites-enabled)
+    for f in /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default; do
+        if [[ -f "$f" ]] && ! grep -q "phpmyadmin" "$f"; then
+            sed -i '/server_name _;/a\\n\tinclude snippets/phpmyadmin.conf;' "$f"
+        fi
+    done
 
     log "phpMyAdmin configured at /phpmyadmin/ with auto-login"
 }

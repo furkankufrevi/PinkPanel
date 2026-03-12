@@ -456,9 +456,11 @@ location ~ ^/phpmyadmin/(.+\\.php)\$ {
 }
 PMA
 
-    if [[ -f /etc/nginx/sites-available/default ]] && ! grep -q "phpmyadmin" /etc/nginx/sites-available/default; then
-        sed -i '/server_name _;/a\\n\tinclude snippets/phpmyadmin.conf;' /etc/nginx/sites-available/default
-    fi
+    for f in /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default; do
+        if [[ -f "$f" ]] && ! grep -q "phpmyadmin" "$f"; then
+            sed -i '/server_name _;/a\\n\tinclude snippets/phpmyadmin.conf;' "$f"
+        fi
+    done
 
     log "phpMyAdmin configured with auto-login"
 }
