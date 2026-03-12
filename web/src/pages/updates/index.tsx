@@ -139,16 +139,29 @@ function UpdateCheckCard() {
           </div>
         )}
 
-        {!hasUpdate && (
+        {!hasUpdate && !data?.error && (
           <p className="text-sm text-muted-foreground">
             You are running the latest version.
           </p>
         )}
 
         {data?.error && (
-          <div className="flex items-center gap-2 text-sm text-yellow-500">
-            <AlertCircle className="h-4 w-4" />
-            {data.error}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm text-yellow-500">
+              <AlertCircle className="h-4 w-4" />
+              {data.error}
+            </div>
+            <Button
+              onClick={() => upgradeMut.mutate()}
+              disabled={upgradeMut.isPending}
+            >
+              {upgradeMut.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Download className="h-4 w-4 mr-2" />
+              )}
+              Upgrade to Latest
+            </Button>
           </div>
         )}
 
