@@ -38,7 +38,7 @@ import (
 //go:embed all:static
 var embeddedFiles embed.FS
 
-var version = "0.3.3137-alpha"
+var version = "0.3.3138-alpha"
 
 func main() {
 	// Parse flags
@@ -147,17 +147,20 @@ func main() {
 		AgentClient: agentClient,
 	}
 
+	// SSL service (needed by PHP handler for vhost rendering)
+	sslSvc := &sslpkg.Service{DB: database}
+
 	// PHP service & handler
 	phpSvc := &php.Service{DB: database}
 	phpHandler := &handlers.PHPHandler{
 		DB:          database,
 		PHPSvc:      phpSvc,
 		DomainSvc:   domainSvc,
+		SSLSvc:      sslSvc,
 		AgentClient: agentClient,
 	}
 
-	// SSL service & handler
-	sslSvc := &sslpkg.Service{DB: database}
+	// SSL handler
 	acmeSvc := &sslpkg.ACMEService{
 		Email:       "admin@localhost", // will be updated from DB settings
 		AgentClient: agentClient,

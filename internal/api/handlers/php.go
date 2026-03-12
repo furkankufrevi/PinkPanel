@@ -11,6 +11,7 @@ import (
 	"github.com/pinkpanel/pinkpanel/internal/agent"
 	"github.com/pinkpanel/pinkpanel/internal/core/domain"
 	"github.com/pinkpanel/pinkpanel/internal/core/php"
+	"github.com/pinkpanel/pinkpanel/internal/core/ssl"
 	"github.com/pinkpanel/pinkpanel/internal/db"
 	tmpl "github.com/pinkpanel/pinkpanel/internal/template"
 )
@@ -19,6 +20,7 @@ type PHPHandler struct {
 	DB          *sql.DB
 	PHPSvc      *php.Service
 	DomainSvc   *domain.Service
+	SSLSvc      *ssl.Service
 	AgentClient *agent.Client
 }
 
@@ -106,22 +108,43 @@ func (h *PHPHandler) UpdateDomainPHP(c *fiber.Ctx) error {
 		}
 	}
 
-	// Update NGINX vhost to point to new PHP-FPM socket
-	vhostContent, err := tmpl.RenderNginxVhost(tmpl.NginxVhostData{
+	// Update NGINX vhost to point to new PHP-FPM socket (preserve SSL if present)
+	vhostData := tmpl.NginxVhostData{
 		Domain:       dom.Name,
 		DocumentRoot: dom.DocumentRoot,
 		PHPVersion:   req.Version,
-	})
+	}
+	if cert, err := h.SSLSvc.GetByDomainID(domainID); err == nil && cert != nil {
+		vhostData.SSLEnabled = true
+		vhostData.SSLCertPath = cert.CertPath
+		vhostData.SSLKeyPath = cert.KeyPath
+		if cert.ChainPath != nil {
+			vhostData.SSLChainPath = *cert.ChainPath
+		}
+		vhostData.ForceHTTPS = cert.ForceHTTPS
+		vhostData.HTTP2 = true
+		vhostData.HSTS = true
+		vhostData.HSTSMaxAge = 31536000
+	}
+	vhostContent, err := tmpl.RenderNginxVhost(vhostData)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to render nginx vhost")
 	} else {
 		configPath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", dom.Name)
+		enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", dom.Name)
 		if _, err := h.AgentClient.Call("file_write", map[string]any{
 			"path":    configPath,
 			"content": vhostContent,
 			"mode":    "0644",
 		}); err != nil {
 			log.Error().Err(err).Msg("failed to write nginx vhost config")
+		}
+		if _, err := h.AgentClient.Call("file_write", map[string]any{
+			"path":    enabledPath,
+			"content": vhostContent,
+			"mode":    "0644",
+		}); err != nil {
+			log.Error().Err(err).Msg("failed to write nginx sites-enabled config")
 		}
 		if _, err := h.AgentClient.Call("nginx_reload", nil); err != nil {
 			log.Error().Err(err).Msg("failed to reload nginx")

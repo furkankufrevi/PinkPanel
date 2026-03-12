@@ -172,9 +172,13 @@ func (r *RenewalService) renewCert(cert CertForRenewal) {
 		return
 	}
 	configPath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", cert.DomainName)
+	enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", cert.DomainName)
 	if _, err := r.AgentClient.Call("file_write", map[string]any{"path": configPath, "content": vhostContent, "mode": "0644"}); err != nil {
-		logger.Error().Err(err).Msg("failed to write NGINX config")
+		logger.Error().Err(err).Msg("failed to write NGINX sites-available config")
 		return
+	}
+	if _, err := r.AgentClient.Call("file_write", map[string]any{"path": enabledPath, "content": vhostContent, "mode": "0644"}); err != nil {
+		logger.Error().Err(err).Msg("failed to write NGINX sites-enabled config")
 	}
 	if _, err := r.AgentClient.Call("nginx_reload", nil); err != nil {
 		logger.Error().Err(err).Msg("failed to reload NGINX")
