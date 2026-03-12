@@ -153,6 +153,10 @@ log "New version: $NEW_VERSION"
 if [[ "$CURRENT" == "$NEW_VERSION" ]]; then
     warn "Already running $CURRENT — no upgrade needed"
     rm -rf "$BUILD_DIR"
+    # Ensure services are running (in case a previous upgrade left them stopped)
+    systemctl start pinkpanel-agent 2>/dev/null || true
+    sleep 1
+    systemctl start pinkpanel 2>/dev/null || true
     exit 0
 fi
 
