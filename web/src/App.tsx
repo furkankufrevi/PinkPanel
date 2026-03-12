@@ -24,6 +24,7 @@ const DomainDatabases = lazy(() => import("@/pages/domains/detail/databases").th
 const DomainFTP = lazy(() => import("@/pages/domains/detail/ftp").then((m) => ({ default: m.DomainFTP })));
 const DomainBackups = lazy(() => import("@/pages/domains/detail/backups").then((m) => ({ default: m.DomainBackups })));
 const DomainLogs = lazy(() => import("@/pages/domains/detail/logs").then((m) => ({ default: m.DomainLogs })));
+const FilesPage = lazy(() => import("@/pages/files").then((m) => ({ default: m.FilesPage })));
 const DatabasesPage = lazy(() => import("@/pages/databases").then((m) => ({ default: m.DatabasesPage })));
 const BackupsPage = lazy(() => import("@/pages/backups").then((m) => ({ default: m.BackupsPage })));
 const LogsPage = lazy(() => import("@/pages/logs").then((m) => ({ default: m.LogsPage })));
@@ -87,6 +88,7 @@ function App() {
                     <Route path="backups" element={<DomainBackups />} />
                     <Route path="settings" element={<DomainSettings />} />
                   </Route>
+                  <Route path="files" element={<FilesPage />} />
                   <Route path="databases" element={<DatabasesPage />} />
                   <Route path="backups" element={<BackupsPage />} />
                   <Route path="logs" element={<LogsPage />} />
