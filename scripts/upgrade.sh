@@ -8,6 +8,8 @@ set -euo pipefail
 REPO="https://github.com/furkankufrevi/PinkPanel.git"
 BUILD_DIR="/tmp/pinkpanel-build"
 PINKPANEL_HOME="/opt/pinkpanel"
+PINKPANEL_DATA="/var/lib/pinkpanel"
+VERSION_FILE="/etc/pinkpanel/version"
 
 BOLD='\033[1m'
 GREEN='\033[0;32m'
@@ -31,6 +33,93 @@ print_banner() {
     echo ""
 }
 
+# ── Version helpers ────────────────────────
+# Strips pre-release suffix and converts "0.3.0-alpha" → "000300"
+# so we can do numeric comparisons.
+version_to_num() {
+    local ver="${1%%-*}"  # strip -alpha, -beta, etc.
+    local major minor patch
+    IFS='.' read -r major minor patch <<< "$ver"
+    printf '%d%02d%02d' "${major:-0}" "${minor:-0}" "${patch:-0}"
+}
+
+# Returns true if $1 < $2
+version_lt() {
+    [[ $(version_to_num "$1") -lt $(version_to_num "$2") ]]
+}
+
+get_current_version() {
+    # Try version file first, then binary, then fall back to "0.0.0"
+    if [[ -f "$VERSION_FILE" ]]; then
+        cat "$VERSION_FILE"
+    elif [[ -x "$PINKPANEL_HOME/bin/pinkpanel-cli" ]]; then
+        "$PINKPANEL_HOME/bin/pinkpanel-cli" version 2>/dev/null | awk '{print $2}' || echo "0.0.0"
+    elif [[ -x "$PINKPANEL_HOME/bin/pinkpanel" ]]; then
+        "$PINKPANEL_HOME/bin/pinkpanel" version 2>/dev/null | awk '{print $2}' || echo "0.0.0"
+    else
+        echo "0.0.0"
+    fi
+}
+
+save_version() {
+    echo "$1" > "$VERSION_FILE"
+}
+
+# ══════════════════════════════════════════════
+# Version-specific migrations
+# Each function runs only if upgrading FROM a version older than its target.
+# Add new migrations at the bottom with incrementing version numbers.
+# ══════════════════════════════════════════════
+
+migrate_to_0_3_0() {
+    log "Running migrations for 0.3.0..."
+
+    # --- ACME data dir: /etc/pinkpanel/acme → /var/lib/pinkpanel/acme ---
+    local old_acme="/etc/pinkpanel/acme"
+    local new_acme="$PINKPANEL_DATA/acme"
+    mkdir -p "$new_acme"
+    if [[ -d "$old_acme" ]] && ls "$old_acme"/* &>/dev/null 2>&1; then
+        log "  Migrating ACME data to $new_acme..."
+        cp -a "$old_acme"/* "$new_acme/" 2>/dev/null || true
+        rm -rf "$old_acme"
+    fi
+    chown -R pinkpanel:pinkpanel "$new_acme" 2>/dev/null || true
+
+    # --- MySQL: password auth → unix_socket ---
+    if [[ -f /etc/pinkpanel/mysql.cnf ]]; then
+        log "  Migrating MySQL root auth to unix_socket..."
+        local migrate_sql="ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket; FLUSH PRIVILEGES;"
+        if mysql --defaults-file=/etc/pinkpanel/mysql.cnf -e "$migrate_sql" 2>/dev/null; then
+            log "  MySQL auth migrated via password file"
+        elif mysql -u root -e "$migrate_sql" 2>/dev/null; then
+            log "  MySQL auth migrated via unix_socket"
+        else
+            warn "  Could not migrate MySQL auth — manual intervention may be needed"
+        fi
+        rm -f /etc/pinkpanel/mysql.cnf
+        log "  Removed legacy mysql.cnf"
+    fi
+
+    log "Migrations for 0.3.0 complete"
+}
+
+# ── Run all applicable migrations ──────────
+run_migrations() {
+    local from_version="$1"
+
+    # Add migration entries here in order. Format:
+    #   version_lt "$from_version" "X.Y.Z" && migrate_to_X_Y_Z
+    version_lt "$from_version" "0.3.0" && migrate_to_0_3_0
+
+    # Future migrations go here:
+    # version_lt "$from_version" "0.4.0" && migrate_to_0_4_0
+    # version_lt "$from_version" "0.5.0" && migrate_to_0_5_0
+}
+
+# ══════════════════════════════════════════════
+# Main upgrade flow
+# ══════════════════════════════════════════════
+
 [[ $EUID -eq 0 ]] || die "Run as root: sudo bash upgrade.sh"
 
 print_banner
@@ -38,10 +127,7 @@ echo -e "  ${BOLD}${GREEN}Upgrader${NC}"
 echo ""
 
 # Get current version
-CURRENT="unknown"
-if [[ -x "$PINKPANEL_HOME/bin/pinkpanel" ]]; then
-    CURRENT=$("$PINKPANEL_HOME/bin/pinkpanel" version 2>/dev/null || echo "unknown")
-fi
+CURRENT=$(get_current_version)
 log "Current version: $CURRENT"
 
 # Ensure build tools exist
@@ -58,6 +144,17 @@ cd "$BUILD_DIR"
 log "Building..."
 make build 2>&1 | tail -5
 log "Build complete"
+
+# Get new version from the freshly built binary
+NEW_VERSION=$("$BUILD_DIR/dist/pinkpanel-cli" version 2>/dev/null | awk '{print $2}' || echo "unknown")
+log "New version: $NEW_VERSION"
+
+# Check if already up to date
+if [[ "$CURRENT" == "$NEW_VERSION" ]]; then
+    warn "Already running $CURRENT — no upgrade needed"
+    rm -rf "$BUILD_DIR"
+    exit 0
+fi
 
 # Stop services
 log "Stopping PinkPanel services..."
@@ -125,7 +222,6 @@ BINDOPTS
     # Repair named.conf.local: remove stray "};" lines left by old zone removal bug
     if [[ -f /etc/bind/named.conf.local ]]; then
         local conf="/etc/bind/named.conf.local"
-        # Rebuild config: keep comments and zone blocks, discard orphan "};" lines
         local tmp_conf
         tmp_conf=$(mktemp)
         local in_zone=0
@@ -139,7 +235,6 @@ BINDOPTS
                     in_zone=0
                 fi
             elif [[ "$line" =~ ^[[:space:]]*\}\;[[:space:]]*$ ]]; then
-                # Stray orphan "};" — skip it
                 warn "Removed stray '};' from named.conf.local"
             else
                 echo "$line" >> "$tmp_conf"
@@ -182,42 +277,11 @@ BINDOPTS
 install_missing_packages
 fix_bind
 
-# ── Migrate ACME data dir ──────────────────
-migrate_acme() {
-    local old_dir="/etc/pinkpanel/acme"
-    local new_dir="/var/lib/pinkpanel/acme"
-    mkdir -p "$new_dir"
-    # Move existing ACME account data if it exists in the old location
-    if [[ -d "$old_dir" ]] && ls "$old_dir"/* &>/dev/null 2>&1; then
-        log "Migrating ACME data from $old_dir to $new_dir..."
-        cp -a "$old_dir"/* "$new_dir/" 2>/dev/null || true
-        rm -rf "$old_dir"
-        log "ACME data migrated"
-    fi
-    chown -R pinkpanel:pinkpanel "$new_dir" 2>/dev/null || true
-}
+# ── Run version-specific migrations ────────
+run_migrations "$CURRENT"
 
-# ── Migrate MySQL to unix_socket auth ──────
-migrate_mysql_auth() {
-    # Switch root to unix_socket auth (agent runs as root, no password needed)
-    if [[ -f /etc/pinkpanel/mysql.cnf ]]; then
-        log "Migrating MySQL root auth to unix_socket..."
-        local migrate_sql="ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket; FLUSH PRIVILEGES;"
-        # Try authenticating with the old password file first, fall back to direct root
-        if mysql --defaults-file=/etc/pinkpanel/mysql.cnf -e "$migrate_sql" 2>/dev/null; then
-            log "MySQL auth migrated via password file"
-        elif mysql -u root -e "$migrate_sql" 2>/dev/null; then
-            log "MySQL auth migrated via unix_socket"
-        else
-            warn "Could not migrate MySQL auth — manual intervention may be needed"
-        fi
-        rm -f /etc/pinkpanel/mysql.cnf
-        log "Removed legacy mysql.cnf"
-    fi
-}
-
-migrate_acme
-migrate_mysql_auth
+# ── Save new version ──────────────────────
+save_version "$NEW_VERSION"
 
 # Start services
 log "Starting PinkPanel services..."
@@ -242,13 +306,11 @@ else
     err "PinkPanel failed to start — check: journalctl -u pinkpanel -n 50"
 fi
 
-NEW="unknown"
-if [[ -x "$PINKPANEL_HOME/bin/pinkpanel" ]]; then
-    NEW=$("$PINKPANEL_HOME/bin/pinkpanel" version 2>/dev/null || echo "unknown")
-fi
+# Confirm version from running binary
+INSTALLED=$(get_current_version)
 
 print_banner
 echo -e "  ${BOLD}${GREEN}Upgraded successfully!${NC}"
 echo ""
-echo -e "  $CURRENT → $NEW"
+echo -e "  ${CURRENT} → ${BOLD}${INSTALLED}${NC}"
 echo ""

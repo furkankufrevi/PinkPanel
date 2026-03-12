@@ -27,6 +27,7 @@ import (
 	"github.com/pinkpanel/pinkpanel/internal/core/backup"
 	"github.com/pinkpanel/pinkpanel/internal/core/ftp"
 	sslpkg "github.com/pinkpanel/pinkpanel/internal/core/ssl"
+	"github.com/pinkpanel/pinkpanel/internal/core/user"
 	"github.com/pinkpanel/pinkpanel/internal/db"
 	"github.com/pinkpanel/pinkpanel/internal/logger"
 	ws "github.com/pinkpanel/pinkpanel/internal/websocket"
@@ -37,7 +38,7 @@ import (
 //go:embed all:static
 var embeddedFiles embed.FS
 
-var version = "0.2.0-alpha"
+var version = "0.3.0-alpha"
 
 func main() {
 	// Parse flags
@@ -222,6 +223,15 @@ func main() {
 		AgentClient: agentClient,
 	}
 
+	// User service & handler
+	userSvc := &user.Service{DB: database}
+	userHandler := &handlers.UserHandler{
+		DB:          database,
+		UserSvc:     userSvc,
+		AgentClient: agentClient,
+		BcryptCost:  cfg.Security.BcryptCost,
+	}
+
 	// WebSocket hub for real-time dashboard metrics
 	wsHub := ws.NewHub(agentClient)
 
@@ -240,6 +250,20 @@ func main() {
 	protected.Get("/health/detailed", healthHandler.HealthDetailed)
 	protected.Post("/auth/logout", authHandler.Logout)
 	protected.Post("/auth/change-password", authHandler.ChangePassword)
+	protected.Get("/auth/profile", authHandler.Profile)
+	protected.Get("/auth/sessions", authHandler.ListSessions)
+	protected.Delete("/auth/sessions/:id", authHandler.RevokeSession)
+
+	// User management routes (admin+ only)
+	adminOnly := protected.Group("", middleware.RequireRole("super_admin", "admin"))
+	adminOnly.Get("/users", userHandler.List)
+	adminOnly.Get("/users/:id", userHandler.Get)
+	adminOnly.Post("/users", middleware.RequireRole("super_admin"), userHandler.Create)
+	adminOnly.Put("/users/:id", userHandler.Update)
+	adminOnly.Delete("/users/:id", middleware.RequireRole("super_admin"), userHandler.Delete)
+	adminOnly.Post("/users/:id/suspend", userHandler.Suspend)
+	adminOnly.Post("/users/:id/activate", userHandler.Activate)
+	adminOnly.Post("/users/:id/reset-password", userHandler.ResetPassword)
 
 	// WebSocket route for real-time metrics (uses Upgrade middleware)
 	api.Use("/dashboard/live", func(c *fiber.Ctx) error {

@@ -1,4 +1,4 @@
-VERSION ?= $(shell git describe --tags 2>/dev/null || echo "0.2.0-alpha")
+VERSION ?= $(shell git describe --tags 2>/dev/null || echo "0.3.0-alpha")
 LDFLAGS = -ldflags="-s -w -X main.version=$(VERSION)"
 
 .PHONY: dev build test lint fmt clean

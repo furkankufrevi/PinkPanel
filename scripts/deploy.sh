@@ -402,6 +402,15 @@ start_pinkpanel() {
     log "PinkPanel started"
 }
 
+# ── Save version ─────────────────────────────
+
+save_version() {
+    local ver
+    ver=$("$PINKPANEL_HOME/bin/pinkpanel-cli" version 2>/dev/null | awk '{print $2}' || echo "unknown")
+    echo "$ver" > /etc/pinkpanel/version
+    log "Version $ver saved to /etc/pinkpanel/version"
+}
+
 # ── Cleanup ───────────────────────────────────
 
 cleanup() {
@@ -413,8 +422,11 @@ cleanup() {
 print_done() {
     local ip=$(hostname -I | awk '{print $1}')
 
+    local ver="unknown"
+    [[ -f /etc/pinkpanel/version ]] && ver=$(cat /etc/pinkpanel/version)
+
     print_banner
-    echo -e "  ${BOLD}${GREEN}Deployed successfully!${NC}"
+    echo -e "  ${BOLD}${GREEN}Deployed successfully!${NC}  v${ver}"
     echo ""
     echo -e "  Open in browser:"
     echo -e "  ${BOLD}http://${ip}:${PINKPANEL_PORT}${NC}"
@@ -466,6 +478,7 @@ main() {
     enable_services
     setup_firewall
     start_pinkpanel
+    save_version
     cleanup
 
     print_done

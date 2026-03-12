@@ -513,6 +513,12 @@ main() {
     setup_firewall
     start_services
 
+    # Save installed version
+    local ver
+    ver=$("$PINKPANEL_HOME/bin/pinkpanel-cli" version 2>/dev/null | awk '{print $2}' || echo "unknown")
+    echo "$ver" > /etc/pinkpanel/version
+    log "Version $ver"
+
     print_complete
 }
 
