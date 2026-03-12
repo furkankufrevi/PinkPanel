@@ -25,6 +25,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 		php_version TEXT NOT NULL DEFAULT '8.3',
 		parent_id INTEGER DEFAULT NULL REFERENCES domains(id) ON DELETE CASCADE,
 		separate_dns INTEGER NOT NULL DEFAULT 0,
+		admin_id INTEGER DEFAULT NULL,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`)
@@ -36,7 +37,7 @@ func TestCreateRootDomain(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	d, err := svc.Create("example.com", "8.3", nil)
+	d, err := svc.Create("example.com", "8.3", nil, 1)
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -62,12 +63,12 @@ func TestCreateSubdomain(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	parent, err := svc.Create("example.com", "8.3", nil)
+	parent, err := svc.Create("example.com", "8.3", nil, 1)
 	if err != nil {
 		t.Fatalf("Create parent failed: %v", err)
 	}
 
-	child, err := svc.Create("blog.example.com", "8.2", &parent.ID)
+	child, err := svc.Create("blog.example.com", "8.2", &parent.ID, 1)
 	if err != nil {
 		t.Fatalf("Create subdomain failed: %v", err)
 	}
@@ -84,10 +85,10 @@ func TestPreventSubSubdomain(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	parent, _ := svc.Create("example.com", "8.3", nil)
-	child, _ := svc.Create("blog.example.com", "8.3", &parent.ID)
+	parent, _ := svc.Create("example.com", "8.3", nil, 1)
+	child, _ := svc.Create("blog.example.com", "8.3", &parent.ID, 1)
 
-	_, err := svc.Create("test.blog.example.com", "8.3", &child.ID)
+	_, err := svc.Create("test.blog.example.com", "8.3", &child.ID, 1)
 	if err == nil {
 		t.Error("Expected error when creating sub-subdomain")
 	}
@@ -97,12 +98,12 @@ func TestCreateDuplicateDomain(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	_, err := svc.Create("example.com", "8.3", nil)
+	_, err := svc.Create("example.com", "8.3", nil, 1)
 	if err != nil {
 		t.Fatalf("First create failed: %v", err)
 	}
 
-	_, err = svc.Create("example.com", "8.3", nil)
+	_, err = svc.Create("example.com", "8.3", nil, 1)
 	if err == nil {
 		t.Error("Expected error for duplicate domain")
 	}
@@ -112,7 +113,7 @@ func TestCreateInvalidDomainName(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	_, err := svc.Create("not a domain", "8.3", nil)
+	_, err := svc.Create("not a domain", "8.3", nil, 1)
 	if err == nil {
 		t.Error("Expected error for invalid domain name")
 	}
@@ -123,7 +124,7 @@ func TestCreateSubdomainParentNotFound(t *testing.T) {
 	svc := &Service{DB: db}
 
 	badID := int64(999)
-	_, err := svc.Create("sub.example.com", "8.3", &badID)
+	_, err := svc.Create("sub.example.com", "8.3", &badID, 1)
 	if err == nil {
 		t.Error("Expected error for nonexistent parent")
 	}
@@ -133,7 +134,7 @@ func TestGetByID(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	created, _ := svc.Create("example.com", "8.3", nil)
+	created, _ := svc.Create("example.com", "8.3", nil, 1)
 	d, err := svc.GetByID(created.ID)
 	if err != nil {
 		t.Fatalf("GetByID failed: %v", err)
@@ -157,7 +158,7 @@ func TestGetByName(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	svc.Create("example.com", "8.3", nil)
+	svc.Create("example.com", "8.3", nil, 1)
 	d, err := svc.GetByName("example.com")
 	if err != nil {
 		t.Fatalf("GetByName failed: %v", err)
@@ -171,9 +172,9 @@ func TestGetChildren(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	parent, _ := svc.Create("example.com", "8.3", nil)
-	svc.Create("blog.example.com", "8.3", &parent.ID)
-	svc.Create("api.example.com", "8.3", &parent.ID)
+	parent, _ := svc.Create("example.com", "8.3", nil, 1)
+	svc.Create("blog.example.com", "8.3", &parent.ID, 1)
+	svc.Create("api.example.com", "8.3", &parent.ID, 1)
 
 	children, err := svc.GetChildren(parent.ID)
 	if err != nil {
@@ -188,7 +189,7 @@ func TestGetChildrenEmpty(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	parent, _ := svc.Create("example.com", "8.3", nil)
+	parent, _ := svc.Create("example.com", "8.3", nil, 1)
 	children, err := svc.GetChildren(parent.ID)
 	if err != nil {
 		t.Fatalf("GetChildren failed: %v", err)
@@ -202,11 +203,11 @@ func TestListReturnsBothRootsAndChildren(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	parent, _ := svc.Create("example.com", "8.3", nil)
-	svc.Create("blog.example.com", "8.3", &parent.ID)
-	svc.Create("other.org", "8.3", nil)
+	parent, _ := svc.Create("example.com", "8.3", nil, 1)
+	svc.Create("blog.example.com", "8.3", &parent.ID, 1)
+	svc.Create("other.org", "8.3", nil, 1)
 
-	domains, total, err := svc.List("", "", 1, 50)
+	domains, total, err := svc.List("", "", 1, 50, 0)
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -222,10 +223,10 @@ func TestListSearchFilter(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	svc.Create("example.com", "8.3", nil)
-	svc.Create("other.org", "8.3", nil)
+	svc.Create("example.com", "8.3", nil, 1)
+	svc.Create("other.org", "8.3", nil, 1)
 
-	domains, total, err := svc.List("example", "", 1, 50)
+	domains, total, err := svc.List("example", "", 1, 50, 0)
 	if err != nil {
 		t.Fatalf("List with search failed: %v", err)
 	}
@@ -241,11 +242,11 @@ func TestListStatusFilter(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	d1, _ := svc.Create("example.com", "8.3", nil)
-	svc.Create("other.org", "8.3", nil)
+	d1, _ := svc.Create("example.com", "8.3", nil, 1)
+	svc.Create("other.org", "8.3", nil, 1)
 	svc.Suspend(d1.ID)
 
-	domains, total, err := svc.List("", "suspended", 1, 50)
+	domains, total, err := svc.List("", "suspended", 1, 50, 0)
 	if err != nil {
 		t.Fatalf("List with status failed: %v", err)
 	}
@@ -262,10 +263,10 @@ func TestListPagination(t *testing.T) {
 	svc := &Service{DB: db}
 
 	for i := 0; i < 5; i++ {
-		svc.Create(fmt.Sprintf("domain%d.com", i), "8.3", nil)
+		svc.Create(fmt.Sprintf("domain%d.com", i), "8.3", nil, 1)
 	}
 
-	domains, total, err := svc.List("", "", 1, 2)
+	domains, total, err := svc.List("", "", 1, 2, 0)
 	if err != nil {
 		t.Fatalf("List page 1 failed: %v", err)
 	}
@@ -281,7 +282,7 @@ func TestUpdate(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	d, _ := svc.Create("example.com", "8.3", nil)
+	d, _ := svc.Create("example.com", "8.3", nil, 1)
 	updated, err := svc.Update(d.ID, "/var/www/custom", "8.2")
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
@@ -298,8 +299,8 @@ func TestUpdateSeparateDNS(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	parent, _ := svc.Create("example.com", "8.3", nil)
-	child, _ := svc.Create("blog.example.com", "8.3", &parent.ID)
+	parent, _ := svc.Create("example.com", "8.3", nil, 1)
+	child, _ := svc.Create("blog.example.com", "8.3", &parent.ID, 1)
 
 	if child.SeparateDNS {
 		t.Error("Expected separate_dns false initially")
@@ -327,7 +328,7 @@ func TestSuspendAndActivate(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	d, _ := svc.Create("example.com", "8.3", nil)
+	d, _ := svc.Create("example.com", "8.3", nil, 1)
 
 	if err := svc.Suspend(d.ID); err != nil {
 		t.Fatalf("Suspend failed: %v", err)
@@ -350,7 +351,7 @@ func TestDelete(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	d, _ := svc.Create("example.com", "8.3", nil)
+	d, _ := svc.Create("example.com", "8.3", nil, 1)
 	if err := svc.Delete(d.ID); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
@@ -365,8 +366,8 @@ func TestDeleteCascadesToChildren(t *testing.T) {
 	db := setupTestDB(t)
 	svc := &Service{DB: db}
 
-	parent, _ := svc.Create("example.com", "8.3", nil)
-	child, _ := svc.Create("blog.example.com", "8.3", &parent.ID)
+	parent, _ := svc.Create("example.com", "8.3", nil, 1)
+	child, _ := svc.Create("blog.example.com", "8.3", &parent.ID, 1)
 
 	if err := svc.Delete(parent.ID); err != nil {
 		t.Fatalf("Delete parent failed: %v", err)
@@ -390,9 +391,42 @@ func TestCount(t *testing.T) {
 		t.Errorf("Expected 0, got %d", count)
 	}
 
-	svc.Create("example.com", "8.3", nil)
+	svc.Create("example.com", "8.3", nil, 1)
 	count, _ = svc.Count()
 	if count != 1 {
 		t.Errorf("Expected 1, got %d", count)
+	}
+}
+
+func TestBuildDocumentRoot(t *testing.T) {
+	svc := &Service{}
+
+	tests := []struct {
+		domain, sysUser, expected string
+	}{
+		{"example.com", "", "/var/www/example.com/phtml"},
+		{"example.com", "www-data", "/var/www/example.com/phtml"},
+		{"example.com", "pp_john", "/home/pp_john/domains/example.com/public"},
+	}
+
+	for _, tc := range tests {
+		got := svc.BuildDocumentRoot(tc.domain, tc.sysUser)
+		if got != tc.expected {
+			t.Errorf("BuildDocumentRoot(%q, %q) = %q, want %q", tc.domain, tc.sysUser, got, tc.expected)
+		}
+	}
+}
+
+func TestCreateForUser(t *testing.T) {
+	db := setupTestDB(t)
+	svc := &Service{DB: db}
+
+	d, err := svc.CreateForUser("example.com", "8.3", nil, 1, "pp_john")
+	if err != nil {
+		t.Fatalf("CreateForUser failed: %v", err)
+	}
+
+	if d.DocumentRoot != "/home/pp_john/domains/example.com/public" {
+		t.Errorf("Expected user-scoped doc root, got %s", d.DocumentRoot)
 	}
 }

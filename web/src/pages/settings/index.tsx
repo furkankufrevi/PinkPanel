@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,8 +17,8 @@ import { Switch } from "@/components/ui/switch";
 import { useUIStore } from "@/stores/ui";
 import { toast } from "sonner";
 import api from "@/api/client";
-import { getActivityLog, getServerInfo } from "@/api/settings";
-import type { ActivityEntry } from "@/api/settings";
+import { getActivityLog, getServerInfo, getSessions, revokeSession } from "@/api/settings";
+import type { ActivityEntry, SessionEntry } from "@/api/settings";
 import {
   Server,
   Activity,
@@ -26,6 +26,8 @@ import {
   Cpu,
   HardDrive,
   MemoryStick,
+  Monitor,
+  X,
 } from "lucide-react";
 
 export function SettingsPage() {
@@ -38,6 +40,8 @@ export function SettingsPage() {
         <AppearanceSettings />
         <Separator />
         <ChangePasswordCard />
+        <Separator />
+        <ActiveSessionsCard />
         <Separator />
         <ActivityLogCard />
       </div>
@@ -248,6 +252,88 @@ function ChangePasswordCard() {
             {loading ? "Changing..." : "Change Password"}
           </Button>
         </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+function parseUserAgent(ua: string): string {
+  if (!ua) return "Unknown";
+  if (ua.includes("Firefox")) return "Firefox";
+  if (ua.includes("Edg/")) return "Edge";
+  if (ua.includes("Chrome")) return "Chrome";
+  if (ua.includes("Safari")) return "Safari";
+  return ua.substring(0, 40);
+}
+
+function ActiveSessionsCard() {
+  const queryClient = useQueryClient();
+  const { data, isLoading } = useQuery({
+    queryKey: ["sessions"],
+    queryFn: getSessions,
+  });
+
+  async function handleRevoke(id: number) {
+    try {
+      await revokeSession(id);
+      toast.success("Session revoked");
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    } catch {
+      toast.error("Failed to revoke session");
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Monitor className="h-5 w-5" />
+          Active Sessions
+        </CardTitle>
+        <CardDescription>
+          Devices currently logged into your account
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-20 w-full" />
+        ) : !data?.data || data.data.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No active sessions</p>
+        ) : (
+          <div className="space-y-2">
+            {data.data.map((session: SessionEntry) => (
+              <div
+                key={session.id}
+                className="flex items-center justify-between p-3 rounded border text-sm"
+              >
+                <div className="space-y-0.5">
+                  <p className="font-medium flex items-center gap-2">
+                    {parseUserAgent(session.user_agent)}
+                    {session.current && (
+                      <Badge variant="outline" className="text-xs text-green-600 border-green-600">
+                        Current
+                      </Badge>
+                    )}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    IP: {session.ip_address} — Logged in{" "}
+                    {new Date(session.created_at).toLocaleString()}
+                  </p>
+                </div>
+                {!session.current && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleRevoke(session.id)}
+                    className="text-destructive hover:text-destructive"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

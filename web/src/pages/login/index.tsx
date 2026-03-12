@@ -47,8 +47,8 @@ function LoginForm() {
 
   const loginMutation = useMutation({
     mutationFn: (data: LoginRequest) => login(data),
-    onSuccess: (_data, variables) => {
-      setAuthenticated(variables.username);
+    onSuccess: (data, variables) => {
+      setAuthenticated(variables.username, (data.role as "super_admin" | "admin" | "user") ?? "super_admin");
       navigate("/");
     },
     onError: (error: AxiosError<APIError>) => {
@@ -128,7 +128,7 @@ function SetupForm() {
   const setupMutation = useMutation({
     mutationFn: (data: SetupRequest) => setupAdmin(data),
     onSuccess: (_data, variables) => {
-      setAuthenticated(variables.username);
+      setAuthenticated(variables.username, "super_admin");
       toast.success("Admin account created");
       navigate("/");
     },

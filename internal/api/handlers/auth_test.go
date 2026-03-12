@@ -31,6 +31,8 @@ func setupAuthTestDB(t *testing.T) *sql.DB {
 		username TEXT NOT NULL UNIQUE,
 		email TEXT NOT NULL UNIQUE,
 		password_hash TEXT NOT NULL,
+		role TEXT NOT NULL DEFAULT 'super_admin',
+		status TEXT NOT NULL DEFAULT 'active',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`)
@@ -39,6 +41,13 @@ func setupAuthTestDB(t *testing.T) *sql.DB {
 		admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
 		token_hash TEXT NOT NULL UNIQUE,
 		expires_at DATETIME NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.Exec(`CREATE TABLE login_attempts (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		email TEXT NOT NULL,
+		ip_address TEXT NOT NULL,
+		success INTEGER NOT NULL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`)
 	db.Exec(`CREATE TABLE settings (

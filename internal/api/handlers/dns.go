@@ -70,12 +70,21 @@ func (h *DNSHandler) ListRecords(c *fiber.Ctx) error {
 	}
 
 	// Validate domain exists
-	_, err = h.DomainSvc.GetByID(domainID)
+	d, err := h.DomainSvc.GetByID(domainID)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"error": fiber.Map{
 				"code":    "NOT_FOUND",
 				"message": "Domain not found",
+			},
+		})
+	}
+
+	if !checkDomainAccess(c, d) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
 			},
 		})
 	}
@@ -118,6 +127,15 @@ func (h *DNSHandler) CreateRecord(c *fiber.Ctx) error {
 			"error": fiber.Map{
 				"code":    "NOT_FOUND",
 				"message": "Domain not found",
+			},
+		})
+	}
+
+	if !checkDomainAccess(c, d) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
 			},
 		})
 	}
@@ -190,6 +208,15 @@ func (h *DNSHandler) UpdateRecord(c *fiber.Ctx) error {
 		})
 	}
 
+	if !checkDomainAccess(c, d) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
+			},
+		})
+	}
+
 	var req updateDNSRecordRequest
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -258,6 +285,15 @@ func (h *DNSHandler) DeleteRecord(c *fiber.Ctx) error {
 		})
 	}
 
+	if !checkDomainAccess(c, d) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
+			},
+		})
+	}
+
 	if err := h.DNSSvc.Delete(id); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": fiber.Map{
@@ -299,6 +335,15 @@ func (h *DNSHandler) ResetDefaults(c *fiber.Ctx) error {
 			"error": fiber.Map{
 				"code":    "NOT_FOUND",
 				"message": "Domain not found",
+			},
+		})
+	}
+
+	if !checkDomainAccess(c, d) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
 			},
 		})
 	}

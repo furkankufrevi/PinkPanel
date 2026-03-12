@@ -14,15 +14,16 @@ var domainNameRe = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\
 
 // Domain represents a row in the domains table.
 type Domain struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
 	DocumentRoot string `json:"document_root"`
-	Status      string `json:"status"`
-	PHPVersion  string `json:"php_version"`
-	ParentID    *int64 `json:"parent_id"`
-	SeparateDNS bool   `json:"separate_dns"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	Status       string `json:"status"`
+	PHPVersion   string `json:"php_version"`
+	ParentID     *int64 `json:"parent_id"`
+	SeparateDNS  bool   `json:"separate_dns"`
+	AdminID      *int64 `json:"admin_id"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
 }
 
 // Service provides domain-related database operations.
@@ -30,12 +31,12 @@ type Service struct {
 	DB *sql.DB
 }
 
-const domainColumns = "id, name, document_root, status, php_version, parent_id, separate_dns, created_at, updated_at"
+const domainColumns = "id, name, document_root, status, php_version, parent_id, separate_dns, admin_id, created_at, updated_at"
 
 func scanDomain(row interface{ Scan(...interface{}) error }) (*Domain, error) {
 	d := &Domain{}
 	var separateDNS int
-	err := row.Scan(&d.ID, &d.Name, &d.DocumentRoot, &d.Status, &d.PHPVersion, &d.ParentID, &separateDNS, &d.CreatedAt, &d.UpdatedAt)
+	err := row.Scan(&d.ID, &d.Name, &d.DocumentRoot, &d.Status, &d.PHPVersion, &d.ParentID, &separateDNS, &d.AdminID, &d.CreatedAt, &d.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -43,12 +44,17 @@ func scanDomain(row interface{ Scan(...interface{}) error }) (*Domain, error) {
 	return d, nil
 }
 
-// List returns a paginated slice of domains with optional search and status
-// filtering. It also returns the total count of matching rows.
-func (s *Service) List(search string, status string, page int, perPage int) ([]Domain, int, error) {
+// List returns a paginated slice of domains with optional search, status,
+// and admin_id filtering. It also returns the total count of matching rows.
+// Pass adminID=0 to skip ownership filtering (super_admin sees all).
+func (s *Service) List(search string, status string, page int, perPage int, adminID int64) ([]Domain, int, error) {
 	where := []string{"1=1"}
 	args := []interface{}{}
 
+	if adminID > 0 {
+		where = append(where, "admin_id = ?")
+		args = append(args, adminID)
+	}
 	if search != "" {
 		where = append(where, "name LIKE ?")
 		args = append(args, "%"+search+"%")
@@ -141,9 +147,61 @@ func (s *Service) GetChildren(parentID int64) ([]Domain, error) {
 	return domains, rows.Err()
 }
 
+// BuildDocumentRoot returns the document root path for a domain.
+// If systemUsername is empty or "www-data", uses /var/www/{domain}/phtml.
+// Otherwise uses /home/{systemUsername}/domains/{domain}/public.
+func (s *Service) BuildDocumentRoot(domainName, systemUsername string) string {
+	if systemUsername == "" || systemUsername == "www-data" {
+		return fmt.Sprintf("/var/www/%s/phtml", domainName)
+	}
+	return fmt.Sprintf("/home/%s/domains/%s/public", systemUsername, domainName)
+}
+
+// CreateForUser creates a domain with a user-scoped document root.
+func (s *Service) CreateForUser(name, phpVersion string, parentID *int64, adminID int64, systemUsername string) (*Domain, error) {
+	if !domainNameRe.MatchString(name) {
+		return nil, fmt.Errorf("invalid domain name: %s", name)
+	}
+
+	if parentID != nil {
+		parent, err := s.GetByID(*parentID)
+		if err != nil {
+			return nil, fmt.Errorf("parent domain not found")
+		}
+		if parent.ParentID != nil {
+			return nil, fmt.Errorf("cannot create subdomain of a subdomain")
+		}
+	}
+
+	var exists int
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM domains WHERE name = ?", name).Scan(&exists); err != nil {
+		return nil, fmt.Errorf("checking duplicate domain: %w", err)
+	}
+	if exists > 0 {
+		return nil, fmt.Errorf("domain already exists: %s", name)
+	}
+
+	documentRoot := s.BuildDocumentRoot(name, systemUsername)
+
+	result, err := s.DB.Exec(
+		"INSERT INTO domains (name, document_root, php_version, parent_id, separate_dns, admin_id) VALUES (?, ?, ?, ?, 0, ?)",
+		name, documentRoot, phpVersion, parentID, adminID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("inserting domain: %w", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("getting last insert id: %w", err)
+	}
+
+	return s.GetByID(id)
+}
+
 // Create validates the domain name, checks for duplicates, and inserts a new
 // domain. If parentID is non-nil, the domain is treated as a subdomain.
-func (s *Service) Create(name string, phpVersion string, parentID *int64) (*Domain, error) {
+func (s *Service) Create(name string, phpVersion string, parentID *int64, adminID int64) (*Domain, error) {
 	if !domainNameRe.MatchString(name) {
 		return nil, fmt.Errorf("invalid domain name: %s", name)
 	}
@@ -168,11 +226,11 @@ func (s *Service) Create(name string, phpVersion string, parentID *int64) (*Doma
 		return nil, fmt.Errorf("domain already exists: %s", name)
 	}
 
-	documentRoot := fmt.Sprintf("/var/www/%s/phtml", name)
+	documentRoot := s.BuildDocumentRoot(name, "")
 
 	result, err := s.DB.Exec(
-		"INSERT INTO domains (name, document_root, php_version, parent_id, separate_dns) VALUES (?, ?, ?, ?, 0)",
-		name, documentRoot, phpVersion, parentID,
+		"INSERT INTO domains (name, document_root, php_version, parent_id, separate_dns, admin_id) VALUES (?, ?, ?, ?, 0, ?)",
+		name, documentRoot, phpVersion, parentID, adminID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("inserting domain: %w", err)

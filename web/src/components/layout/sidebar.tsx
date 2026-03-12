@@ -9,18 +9,28 @@ import {
   Settings,
   PanelLeftClose,
   PanelLeft,
+  Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUIStore } from "@/stores/ui";
+import { useAuthStore } from "@/stores/auth";
 import { Button } from "@/components/ui/button";
 
-const navItems = [
+interface NavItem {
+  path: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  adminOnly?: boolean;
+}
+
+const navItems: NavItem[] = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
   { path: "/domains", label: "Domains", icon: Globe },
   { path: "/databases", label: "Databases", icon: Database },
   { path: "/files", label: "Files", icon: FolderOpen },
   { path: "/backups", label: "Backups", icon: Archive },
   { path: "/logs", label: "Logs", icon: ScrollText },
+  { path: "/users", label: "Users", icon: Users, adminOnly: true },
   { path: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -28,6 +38,13 @@ export function Sidebar() {
   const location = useLocation();
   const collapsed = useUIStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
+  const role = useAuthStore((s) => s.role);
+
+  const isAdmin = role === "super_admin" || role === "admin";
+
+  const visibleItems = navItems.filter(
+    (item) => !item.adminOnly || isAdmin
+  );
 
   return (
     <aside
@@ -61,7 +78,7 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 space-y-1 p-2">
-        {navItems.map((item) => {
+        {visibleItems.map((item) => {
           const isActive =
             item.path === "/"
               ? location.pathname === "/"

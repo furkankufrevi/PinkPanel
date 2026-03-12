@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/pinkpanel/pinkpanel/internal/agent"
+	"github.com/pinkpanel/pinkpanel/internal/api/middleware"
 	"github.com/pinkpanel/pinkpanel/internal/core/dns"
 	"github.com/pinkpanel/pinkpanel/internal/core/domain"
 	"github.com/pinkpanel/pinkpanel/internal/core/php"
@@ -49,11 +50,18 @@ func (h *DomainHandler) List(c *fiber.Ctx) error {
 		perPage = 20
 	}
 
+	// Super admins see all domains; others see only their own
+	var filterAdminID int64
+	if !middleware.IsSuperAdmin(c) {
+		filterAdminID, _ = c.Locals("admin_id").(int64)
+	}
+
 	domains, total, err := h.DomainSvc.List(
 		c.Query("search"),
 		c.Query("status"),
 		page,
 		perPage,
+		filterAdminID,
 	)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -94,6 +102,15 @@ func (h *DomainHandler) Get(c *fiber.Ctx) error {
 			"error": fiber.Map{
 				"code":    "NOT_FOUND",
 				"message": "Domain not found",
+			},
+		})
+	}
+
+	if !checkDomainAccess(c, d) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
 			},
 		})
 	}
@@ -155,8 +172,11 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 		}
 	}
 
-	// Create domain in DB
-	d, err := h.DomainSvc.Create(req.Name, phpVersion, req.ParentID)
+	// Create domain in DB with user-scoped document root
+	adminID, _ := c.Locals("admin_id").(int64)
+	var systemUsername string
+	h.DB.QueryRow("SELECT COALESCE(system_username, 'www-data') FROM admins WHERE id = ?", adminID).Scan(&systemUsername)
+	d, err := h.DomainSvc.CreateForUser(req.Name, phpVersion, req.ParentID, adminID, systemUsername)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": fiber.Map{
@@ -166,11 +186,15 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 		})
 	}
 
-	// Create document root directory via agent
+	// Create document root directory via agent (owned by system user)
+	fileOwner := systemUsername
+	if fileOwner == "" {
+		fileOwner = "www-data"
+	}
 	_, err = h.AgentClient.Call("dir_create", map[string]interface{}{
 		"path":  d.DocumentRoot,
-		"owner": "www-data",
-		"group": "www-data",
+		"owner": fileOwner,
+		"group": fileOwner,
 	})
 	if err != nil {
 		log.Printf("WARNING: failed to create document root for %s: %v", d.Name, err)
@@ -187,8 +211,10 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 		log.Printf("WARNING: failed to create default index page for %s: %v", d.Name, err)
 	}
 
-	// Create PHP-FPM pool for this domain
+	// Create PHP-FPM pool for this domain (runs as system user)
 	poolConfig := php.DefaultPoolConfig(d.Name, d.PHPVersion, nil)
+	poolConfig.User = fileOwner
+	poolConfig.Group = fileOwner
 	poolContent, err := tmpl.RenderPHPPool(tmpl.PHPPoolData{
 		Domain:       poolConfig.Domain,
 		User:         poolConfig.User,
@@ -280,7 +306,6 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 	}
 
 	// Log activity (non-critical)
-	adminID, _ := c.Locals("admin_id").(int64)
 	action := "domain_create"
 	if parentDomain != nil {
 		action = "subdomain_create"
@@ -317,6 +342,15 @@ func (h *DomainHandler) Update(c *fiber.Ctx) error {
 			"error": fiber.Map{
 				"code":    "NOT_FOUND",
 				"message": "Domain not found",
+			},
+		})
+	}
+
+	if !checkDomainAccess(c, existing) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
 			},
 		})
 	}
@@ -468,6 +502,15 @@ func (h *DomainHandler) Suspend(c *fiber.Ctx) error {
 		})
 	}
 
+	if !checkDomainAccess(c, d) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
+			},
+		})
+	}
+
 	if err := h.DomainSvc.Suspend(id); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": fiber.Map{
@@ -545,6 +588,15 @@ func (h *DomainHandler) Activate(c *fiber.Ctx) error {
 			"error": fiber.Map{
 				"code":    "NOT_FOUND",
 				"message": "Domain not found",
+			},
+		})
+	}
+
+	if !checkDomainAccess(c, d) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
 			},
 		})
 	}
@@ -628,6 +680,15 @@ func (h *DomainHandler) Delete(c *fiber.Ctx) error {
 			"error": fiber.Map{
 				"code":    "NOT_FOUND",
 				"message": "Domain not found",
+			},
+		})
+	}
+
+	if !checkDomainAccess(c, d) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
 			},
 		})
 	}
@@ -725,6 +786,16 @@ func (h *DomainHandler) Delete(c *fiber.Ctx) error {
 	_ = db.LogActivity(h.DB, adminID, "domain_delete", "domain", d.ID, d.Name, c.IP())
 
 	return c.JSON(fiber.Map{"message": "Domain deleted successfully"})
+}
+
+// checkDomainAccess verifies the current user has access to a domain.
+// Super admins can access all domains; others can only access their own.
+func checkDomainAccess(c *fiber.Ctx, d *domain.Domain) bool {
+	if middleware.IsSuperAdmin(c) {
+		return true
+	}
+	adminID, _ := c.Locals("admin_id").(int64)
+	return d.AdminID != nil && *d.AdminID == adminID
 }
 
 // containsSuffix checks if name ends with ".suffix"

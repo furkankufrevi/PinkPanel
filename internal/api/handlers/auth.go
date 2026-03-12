@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"database/sql"
+	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -46,14 +47,30 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 		})
 	}
 
+	// Check for account lockout (10 failed attempts in last 30 minutes)
+	var failCount int
+	h.DB.QueryRow(
+		`SELECT COUNT(*) FROM login_attempts WHERE email = ? AND success = 0 AND created_at > datetime('now', '-30 minutes')`,
+		req.Username,
+	).Scan(&failCount)
+	if failCount >= 10 {
+		return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "ACCOUNT_LOCKED",
+				"message": "Too many failed login attempts. Please try again in 30 minutes.",
+			},
+		})
+	}
+
 	// Look up admin
 	var id int64
-	var passwordHash string
+	var passwordHash, role, status string
 	err := h.DB.QueryRow(
-		"SELECT id, password_hash FROM admins WHERE username = ?",
+		"SELECT id, password_hash, role, status FROM admins WHERE username = ?",
 		req.Username,
-	).Scan(&id, &passwordHash)
+	).Scan(&id, &passwordHash, &role, &status)
 	if err == sql.ErrNoRows {
+		h.recordLoginAttempt(req.Username, c.IP(), false)
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"error": fiber.Map{
 				"code":    "INVALID_CREDENTIALS",
@@ -70,8 +87,20 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 		})
 	}
 
+	// Check account status
+	if status == "suspended" {
+		h.recordLoginAttempt(req.Username, c.IP(), false)
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "ACCOUNT_SUSPENDED",
+				"message": "Your account has been suspended. Contact an administrator.",
+			},
+		})
+	}
+
 	// Verify password
 	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)); err != nil {
+		h.recordLoginAttempt(req.Username, c.IP(), false)
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"error": fiber.Map{
 				"code":    "INVALID_CREDENTIALS",
@@ -80,8 +109,11 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 		})
 	}
 
+	// Successful login — clear failed attempts
+	h.recordLoginAttempt(req.Username, c.IP(), true)
+
 	// Generate tokens
-	tokenPair, err := h.JWTManager.GenerateTokenPair(id, req.Username)
+	tokenPair, err := h.JWTManager.GenerateTokenPair(id, req.Username, role)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": fiber.Map{
@@ -107,7 +139,18 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 		})
 	}
 
-	return c.JSON(tokenPair)
+	// Record login session
+	h.DB.Exec(
+		"INSERT INTO sessions (admin_id, token_hash, ip_address, user_agent, expires_at) VALUES (?, ?, ?, ?, ?)",
+		id, tokenHash, c.IP(), c.Get("User-Agent"), expiresAt,
+	)
+
+	return c.JSON(fiber.Map{
+		"access_token":  tokenPair.AccessToken,
+		"refresh_token": tokenPair.RefreshToken,
+		"expires_at":    tokenPair.ExpiresAt,
+		"role":          role,
+	})
 }
 
 // Refresh issues a new access token from a valid refresh token.
@@ -134,14 +177,14 @@ func (h *AuthHandler) Refresh(c *fiber.Ctx) error {
 	tokenHash := auth.HashToken(req.RefreshToken)
 
 	var adminID int64
-	var username string
+	var username, role string
 	var expiresAt time.Time
 	err := h.DB.QueryRow(`
-		SELECT rt.admin_id, a.username, rt.expires_at
+		SELECT rt.admin_id, a.username, a.role, rt.expires_at
 		FROM refresh_tokens rt
 		JOIN admins a ON a.id = rt.admin_id
 		WHERE rt.token_hash = ?
-	`, tokenHash).Scan(&adminID, &username, &expiresAt)
+	`, tokenHash).Scan(&adminID, &username, &role, &expiresAt)
 	if err == sql.ErrNoRows {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"error": fiber.Map{
@@ -174,7 +217,7 @@ func (h *AuthHandler) Refresh(c *fiber.Ctx) error {
 	h.DB.Exec("DELETE FROM refresh_tokens WHERE token_hash = ?", tokenHash)
 
 	// Generate new token pair
-	tokenPair, err := h.JWTManager.GenerateTokenPair(adminID, username)
+	tokenPair, err := h.JWTManager.GenerateTokenPair(adminID, username, role)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": fiber.Map{
@@ -192,7 +235,12 @@ func (h *AuthHandler) Refresh(c *fiber.Ctx) error {
 		adminID, newTokenHash, newExpiresAt,
 	)
 
-	return c.JSON(tokenPair)
+	return c.JSON(fiber.Map{
+		"access_token":  tokenPair.AccessToken,
+		"refresh_token": tokenPair.RefreshToken,
+		"expires_at":    tokenPair.ExpiresAt,
+		"role":          role,
+	})
 }
 
 // Logout invalidates the refresh token.
@@ -309,4 +357,129 @@ func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"message": "Password changed successfully"})
+}
+
+// Profile returns the current user's profile info.
+func (h *AuthHandler) Profile(c *fiber.Ctx) error {
+	adminID, _ := c.Locals("admin_id").(int64)
+
+	var username, email, role, createdAt string
+	err := h.DB.QueryRow(
+		"SELECT username, email, role, created_at FROM admins WHERE id = ?", adminID,
+	).Scan(&username, &email, &role, &createdAt)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "INTERNAL_ERROR",
+				"message": "Failed to get profile",
+			},
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"id":         adminID,
+		"username":   username,
+		"email":      email,
+		"role":       role,
+		"created_at": createdAt,
+	})
+}
+
+// Session represents an active login session.
+type Session struct {
+	ID        int64  `json:"id"`
+	AdminID   int64  `json:"admin_id"`
+	IPAddress string `json:"ip_address"`
+	UserAgent string `json:"user_agent"`
+	CreatedAt string `json:"created_at"`
+	ExpiresAt string `json:"expires_at"`
+	Current   bool   `json:"current"`
+}
+
+// ListSessions returns active sessions for the authenticated user.
+func (h *AuthHandler) ListSessions(c *fiber.Ctx) error {
+	adminID, _ := c.Locals("admin_id").(int64)
+
+	// Clean up expired sessions
+	h.DB.Exec("DELETE FROM sessions WHERE expires_at < datetime('now')")
+
+	rows, err := h.DB.Query(
+		"SELECT id, admin_id, ip_address, user_agent, created_at, expires_at FROM sessions WHERE admin_id = ? ORDER BY created_at DESC",
+		adminID,
+	)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "INTERNAL_ERROR",
+				"message": "Failed to list sessions",
+			},
+		})
+	}
+	defer rows.Close()
+
+	currentIP := c.IP()
+	currentUA := c.Get("User-Agent")
+	var sessions []Session
+	for rows.Next() {
+		var s Session
+		if err := rows.Scan(&s.ID, &s.AdminID, &s.IPAddress, &s.UserAgent, &s.CreatedAt, &s.ExpiresAt); err != nil {
+			continue
+		}
+		s.Current = s.IPAddress == currentIP && s.UserAgent == currentUA
+		sessions = append(sessions, s)
+	}
+
+	if sessions == nil {
+		sessions = []Session{}
+	}
+
+	return c.JSON(fiber.Map{"data": sessions})
+}
+
+// RevokeSession deletes a specific session.
+func (h *AuthHandler) RevokeSession(c *fiber.Ctx) error {
+	adminID, _ := c.Locals("admin_id").(int64)
+	sessionID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "INVALID_REQUEST",
+				"message": "Invalid session ID",
+			},
+		})
+	}
+
+	// Ensure user can only revoke their own sessions
+	result, err := h.DB.Exec("DELETE FROM sessions WHERE id = ? AND admin_id = ?", sessionID, adminID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "INTERNAL_ERROR",
+				"message": "Failed to revoke session",
+			},
+		})
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "NOT_FOUND",
+				"message": "Session not found",
+			},
+		})
+	}
+
+	return c.JSON(fiber.Map{"message": "Session revoked"})
+}
+
+func (h *AuthHandler) recordLoginAttempt(username, ip string, success bool) {
+	successVal := 0
+	if success {
+		successVal = 1
+	}
+	h.DB.Exec(
+		"INSERT INTO login_attempts (email, ip_address, success) VALUES (?, ?, ?)",
+		username, ip, successVal,
+	)
 }

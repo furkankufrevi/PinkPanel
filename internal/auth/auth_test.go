@@ -11,7 +11,7 @@ func TestGenerateAndValidateToken(t *testing.T) {
 		t.Fatalf("Failed to create JWT manager: %v", err)
 	}
 
-	pair, err := manager.GenerateTokenPair(1, "admin")
+	pair, err := manager.GenerateTokenPair(1, "admin", "super_admin")
 	if err != nil {
 		t.Fatalf("Failed to generate token pair: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestExpiredToken(t *testing.T) {
 		t.Fatalf("Failed to create JWT manager: %v", err)
 	}
 
-	pair, err := manager.GenerateTokenPair(1, "admin")
+	pair, err := manager.GenerateTokenPair(1, "admin", "super_admin")
 	if err != nil {
 		t.Fatalf("Failed to generate token pair: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestDifferentSecrets(t *testing.T) {
 	manager1, _ := NewJWTManager("", 15*time.Minute, 7*24*time.Hour)
 	manager2, _ := NewJWTManager("", 15*time.Minute, 7*24*time.Hour)
 
-	pair, _ := manager1.GenerateTokenPair(1, "admin")
+	pair, _ := manager1.GenerateTokenPair(1, "admin", "super_admin")
 	_, err := manager2.ValidateAccessToken(pair.AccessToken)
 	if err == nil {
 		t.Error("Expected error when validating with different secret")

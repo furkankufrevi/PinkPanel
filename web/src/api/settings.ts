@@ -37,3 +37,22 @@ export async function getServerInfo() {
   const { data } = await api.get<ServerInfo>("/settings/server-info");
   return data;
 }
+
+export interface SessionEntry {
+  id: number;
+  admin_id: number;
+  ip_address: string;
+  user_agent: string;
+  created_at: string;
+  expires_at: string;
+  current: boolean;
+}
+
+export async function getSessions() {
+  const { data } = await api.get<{ data: SessionEntry[] }>("/auth/sessions");
+  return data;
+}
+
+export async function revokeSession(id: number) {
+  await api.delete(`/auth/sessions/${id}`);
+}

@@ -1,22 +1,28 @@
 import { create } from "zustand";
 import { hasTokens } from "@/api/client";
 
+export type UserRole = "super_admin" | "admin" | "user";
+
 interface AuthState {
   isAuthenticated: boolean;
   username: string | null;
-  setAuthenticated: (username: string) => void;
+  role: UserRole | null;
+  setAuthenticated: (username: string, role: UserRole) => void;
   clearAuth: () => void;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
   isAuthenticated: hasTokens(),
   username: localStorage.getItem("pinkpanel_username"),
-  setAuthenticated: (username) => {
+  role: (localStorage.getItem("pinkpanel_role") as UserRole) || null,
+  setAuthenticated: (username, role) => {
     localStorage.setItem("pinkpanel_username", username);
-    set({ isAuthenticated: true, username });
+    localStorage.setItem("pinkpanel_role", role);
+    set({ isAuthenticated: true, username, role });
   },
   clearAuth: () => {
     localStorage.removeItem("pinkpanel_username");
-    set({ isAuthenticated: false, username: null });
+    localStorage.removeItem("pinkpanel_role");
+    set({ isAuthenticated: false, username: null, role: null });
   },
 }));

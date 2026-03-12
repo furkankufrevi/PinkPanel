@@ -78,6 +78,15 @@ func (h *SSLHandler) InstallCertificate(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "domain not found"}})
 	}
 
+	if !checkDomainAccess(c, dom) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
+			},
+		})
+	}
+
 	// Write certificate files via agent
 	resp, err := h.AgentClient.Call("ssl_write_cert", map[string]any{
 		"domain": dom.Name,
@@ -133,6 +142,15 @@ func (h *SSLHandler) IssueLetsEncrypt(c *fiber.Ctx) error {
 	dom, err := h.DomainSvc.GetByID(domainID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "domain not found"}})
+	}
+
+	if !checkDomainAccess(c, dom) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
+			},
+		})
 	}
 
 	// Build domain list: primary + www
@@ -221,6 +239,15 @@ func (h *SSLHandler) DeleteCertificate(c *fiber.Ctx) error {
 	dom, err := h.DomainSvc.GetByID(domainID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "domain not found"}})
+	}
+
+	if !checkDomainAccess(c, dom) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
+			},
+		})
 	}
 
 	// Delete certificate files via agent

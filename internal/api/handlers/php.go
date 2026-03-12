@@ -62,6 +62,15 @@ func (h *PHPHandler) UpdateDomainPHP(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "domain not found"}})
 	}
 
+	if !checkDomainAccess(c, dom) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
+			},
+		})
+	}
+
 	// Update in database
 	settings, err := h.PHPSvc.UpdateDomainPHP(domainID, req.Version, req.Settings)
 	if err != nil {
@@ -136,6 +145,15 @@ func (h *PHPHandler) GetPHPInfo(c *fiber.Ctx) error {
 	dom, err := h.DomainSvc.GetByID(domainID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "domain not found"}})
+	}
+
+	if !checkDomainAccess(c, dom) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": fiber.Map{
+				"code":    "FORBIDDEN",
+				"message": "Access denied",
+			},
+		})
 	}
 
 	resp, err := h.AgentClient.Call("php_info", map[string]any{

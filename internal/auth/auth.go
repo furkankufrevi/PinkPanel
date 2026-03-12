@@ -16,6 +16,7 @@ import (
 type Claims struct {
 	AdminID  int64  `json:"admin_id"`
 	Username string `json:"username"`
+	Role     string `json:"role"`
 	jwt.RegisteredClaims
 }
 
@@ -47,13 +48,19 @@ func NewJWTManager(secretFile string, accessTTL, refreshTTL time.Duration) (*JWT
 }
 
 // GenerateTokenPair creates an access token + refresh token for the given admin.
-func (m *JWTManager) GenerateTokenPair(adminID int64, username string) (*TokenPair, error) {
+func (m *JWTManager) GenerateTokenPair(adminID int64, username, role string) (*TokenPair, error) {
 	now := time.Now()
 	expiresAt := now.Add(m.accessTokenTTL)
+
+	// Default role for backward compatibility with old tokens
+	if role == "" {
+		role = "super_admin"
+	}
 
 	claims := Claims{
 		AdminID:  adminID,
 		Username: username,
+		Role:     role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			IssuedAt:  jwt.NewNumericDate(now),

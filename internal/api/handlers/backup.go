@@ -96,7 +96,7 @@ func (h *BackupHandler) Create(c *fiber.Ctx) error {
 		fileName = fmt.Sprintf("domain-%s-%s.tar.gz", dom.Name, timestamp)
 	} else {
 		// Full backup: all domains
-		domains, _, _ := h.DomainSvc.List("", "", 1, 10000)
+		domains, _, _ := h.DomainSvc.List("", "", 1, 10000, 0)
 		for _, d := range domains {
 			sourcePaths = append(sourcePaths, filepath.Dir(d.DocumentRoot))
 		}

@@ -10,8 +10,8 @@ export function useLogin() {
 
   return useMutation({
     mutationFn: (data: LoginRequest) => login(data),
-    onSuccess: (_data, variables) => {
-      setAuthenticated(variables.username);
+    onSuccess: (data, variables) => {
+      setAuthenticated(variables.username, (data.role as "super_admin" | "admin" | "user") ?? "super_admin");
       navigate("/");
     },
   });

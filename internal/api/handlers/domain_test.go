@@ -30,6 +30,7 @@ func setupDomainTestDB(t *testing.T) (*DomainHandler, *fiber.App) {
 		php_version TEXT NOT NULL DEFAULT '8.3',
 		parent_id INTEGER DEFAULT NULL REFERENCES domains(id) ON DELETE CASCADE,
 		separate_dns INTEGER NOT NULL DEFAULT 0,
+		admin_id INTEGER DEFAULT NULL,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`)
@@ -67,6 +68,13 @@ func setupDomainTestDB(t *testing.T) (*DomainHandler, *fiber.App) {
 	}
 
 	app := fiber.New()
+	// Inject test admin context (super_admin with id=1)
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals("admin_id", int64(1))
+		c.Locals("username", "admin")
+		c.Locals("role", "super_admin")
+		return c.Next()
+	})
 	app.Get("/api/domains", handler.List)
 	app.Post("/api/domains", handler.Create)
 	app.Get("/api/domains/:id", handler.Get)
@@ -76,6 +84,20 @@ func setupDomainTestDB(t *testing.T) (*DomainHandler, *fiber.App) {
 	app.Post("/api/domains/:id/activate", handler.Activate)
 
 	return handler, app
+}
+
+func parseDomainResponse(respBody []byte) domain.Domain {
+	// Response may be wrapped {"data":..., "warnings":...} or bare domain
+	var wrapped struct {
+		Data domain.Domain `json:"data"`
+	}
+	json.Unmarshal(respBody, &wrapped)
+	if wrapped.Data.Name != "" {
+		return wrapped.Data
+	}
+	var d domain.Domain
+	json.Unmarshal(respBody, &d)
+	return d
 }
 
 func TestDomainHandlerCreateRootDomain(t *testing.T) {
@@ -97,9 +119,8 @@ func TestDomainHandlerCreateRootDomain(t *testing.T) {
 		t.Fatalf("Expected 201, got %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	var d domain.Domain
 	respBody, _ := io.ReadAll(resp.Body)
-	json.Unmarshal(respBody, &d)
+	d := parseDomainResponse(respBody)
 
 	if d.Name != "example.com" {
 		t.Errorf("Expected name example.com, got %s", d.Name)
@@ -118,9 +139,8 @@ func TestDomainHandlerCreateSubdomain(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ := app.Test(req, -1)
 
-	var parent domain.Domain
 	respBody, _ := io.ReadAll(resp.Body)
-	json.Unmarshal(respBody, &parent)
+	parent := parseDomainResponse(respBody)
 
 	// Create subdomain with parent_id
 	subBody := fmt.Sprintf(`{"name":"blog","php_version":"8.2","parent_id":%d}`, parent.ID)
@@ -136,9 +156,8 @@ func TestDomainHandlerCreateSubdomain(t *testing.T) {
 		t.Fatalf("Expected 201, got %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	var child domain.Domain
 	respBody, _ = io.ReadAll(resp.Body)
-	json.Unmarshal(respBody, &child)
+	child := parseDomainResponse(respBody)
 
 	if child.Name != "blog.example.com" {
 		t.Errorf("Expected name blog.example.com, got %s", child.Name)
@@ -159,18 +178,16 @@ func TestDomainHandlerCreateSubSubdomainRejected(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/domains", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ := app.Test(req, -1)
-	var parent domain.Domain
 	respBody, _ := io.ReadAll(resp.Body)
-	json.Unmarshal(respBody, &parent)
+	parent := parseDomainResponse(respBody)
 
 	// Create subdomain
 	subBody := fmt.Sprintf(`{"name":"blog","php_version":"8.3","parent_id":%d}`, parent.ID)
 	req = httptest.NewRequest("POST", "/api/domains", bytes.NewReader([]byte(subBody)))
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ = app.Test(req, -1)
-	var child domain.Domain
 	respBody, _ = io.ReadAll(resp.Body)
-	json.Unmarshal(respBody, &child)
+	child := parseDomainResponse(respBody)
 
 	// Try sub-subdomain
 	subSubBody := fmt.Sprintf(`{"name":"test","php_version":"8.3","parent_id":%d}`, child.ID)
@@ -212,9 +229,9 @@ func TestDomainHandlerCreateBadParentID(t *testing.T) {
 func TestDomainHandlerList(t *testing.T) {
 	handler, app := setupDomainTestDB(t)
 
-	handler.DomainSvc.Create("example.com", "8.3", nil)
-	parent, _ := handler.DomainSvc.Create("other.org", "8.3", nil)
-	handler.DomainSvc.Create("blog.other.org", "8.3", &parent.ID)
+	handler.DomainSvc.Create("example.com", "8.3", nil, 1)
+	parent, _ := handler.DomainSvc.Create("other.org", "8.3", nil, 1)
+	handler.DomainSvc.Create("blog.other.org", "8.3", &parent.ID, 1)
 
 	req := httptest.NewRequest("GET", "/api/domains?per_page=50", nil)
 	resp, err := app.Test(req, -1)
@@ -259,8 +276,8 @@ func TestDomainHandlerList(t *testing.T) {
 func TestDomainHandlerListSearch(t *testing.T) {
 	handler, app := setupDomainTestDB(t)
 
-	handler.DomainSvc.Create("example.com", "8.3", nil)
-	handler.DomainSvc.Create("other.org", "8.3", nil)
+	handler.DomainSvc.Create("example.com", "8.3", nil, 1)
+	handler.DomainSvc.Create("other.org", "8.3", nil, 1)
 
 	req := httptest.NewRequest("GET", "/api/domains?search=example", nil)
 	resp, _ := app.Test(req, -1)
@@ -280,7 +297,7 @@ func TestDomainHandlerListSearch(t *testing.T) {
 func TestDomainHandlerGet(t *testing.T) {
 	handler, app := setupDomainTestDB(t)
 
-	d, _ := handler.DomainSvc.Create("example.com", "8.3", nil)
+	d, _ := handler.DomainSvc.Create("example.com", "8.3", nil, 1)
 
 	req := httptest.NewRequest("GET", fmt.Sprintf("/api/domains/%d", d.ID), nil)
 	resp, _ := app.Test(req, -1)
@@ -323,7 +340,7 @@ func TestDomainHandlerGetInvalidID(t *testing.T) {
 func TestDomainHandlerUpdate(t *testing.T) {
 	handler, app := setupDomainTestDB(t)
 
-	d, _ := handler.DomainSvc.Create("example.com", "8.3", nil)
+	d, _ := handler.DomainSvc.Create("example.com", "8.3", nil, 1)
 
 	body, _ := json.Marshal(updateDomainRequest{
 		DocumentRoot: "/var/www/custom",
@@ -352,8 +369,8 @@ func TestDomainHandlerUpdate(t *testing.T) {
 func TestDomainHandlerUpdateSeparateDNS(t *testing.T) {
 	handler, app := setupDomainTestDB(t)
 
-	parent, _ := handler.DomainSvc.Create("example.com", "8.3", nil)
-	child, _ := handler.DomainSvc.Create("blog.example.com", "8.3", &parent.ID)
+	parent, _ := handler.DomainSvc.Create("example.com", "8.3", nil, 1)
+	child, _ := handler.DomainSvc.Create("blog.example.com", "8.3", &parent.ID, 1)
 
 	// Toggle separate_dns on
 	body := `{"separate_dns":true}`
@@ -389,7 +406,7 @@ func TestDomainHandlerUpdateNotFound(t *testing.T) {
 func TestDomainHandlerSuspendAndActivate(t *testing.T) {
 	handler, app := setupDomainTestDB(t)
 
-	d, _ := handler.DomainSvc.Create("example.com", "8.3", nil)
+	d, _ := handler.DomainSvc.Create("example.com", "8.3", nil, 1)
 
 	// Suspend
 	req := httptest.NewRequest("POST", fmt.Sprintf("/api/domains/%d/suspend", d.ID), nil)
@@ -431,7 +448,7 @@ func TestDomainHandlerSuspendNotFound(t *testing.T) {
 func TestDomainHandlerDelete(t *testing.T) {
 	handler, app := setupDomainTestDB(t)
 
-	d, _ := handler.DomainSvc.Create("example.com", "8.3", nil)
+	d, _ := handler.DomainSvc.Create("example.com", "8.3", nil, 1)
 
 	req := httptest.NewRequest("DELETE", fmt.Sprintf("/api/domains/%d", d.ID), nil)
 	resp, _ := app.Test(req, -1)
@@ -460,8 +477,8 @@ func TestDomainHandlerDeleteNotFound(t *testing.T) {
 func TestDomainHandlerDeleteCascadesChildren(t *testing.T) {
 	handler, app := setupDomainTestDB(t)
 
-	parent, _ := handler.DomainSvc.Create("example.com", "8.3", nil)
-	child, _ := handler.DomainSvc.Create("blog.example.com", "8.3", &parent.ID)
+	parent, _ := handler.DomainSvc.Create("example.com", "8.3", nil, 1)
+	child, _ := handler.DomainSvc.Create("blog.example.com", "8.3", &parent.ID, 1)
 
 	req := httptest.NewRequest("DELETE", fmt.Sprintf("/api/domains/%d", parent.ID), nil)
 	resp, _ := app.Test(req, -1)
@@ -479,8 +496,8 @@ func TestDomainHandlerDefaultPHPVersion(t *testing.T) {
 	_, app := setupDomainTestDB(t)
 
 	// Create without specifying php_version
-	body := `{"name":"example.com"}`
-	req := httptest.NewRequest("POST", "/api/domains", bytes.NewReader([]byte(body)))
+	body := []byte(`{"name":"example.com"}`)
+	req := httptest.NewRequest("POST", "/api/domains", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ := app.Test(req, -1)
 	if resp.StatusCode != 201 {
@@ -488,9 +505,8 @@ func TestDomainHandlerDefaultPHPVersion(t *testing.T) {
 		t.Fatalf("Expected 201, got %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	var d domain.Domain
 	respBody, _ := io.ReadAll(resp.Body)
-	json.Unmarshal(respBody, &d)
+	d := parseDomainResponse(respBody)
 
 	if d.PHPVersion != "8.3" {
 		t.Errorf("Expected default PHP 8.3, got %s", d.PHPVersion)

@@ -41,8 +41,48 @@ func Auth(jwtManager *auth.JWTManager) fiber.Handler {
 			})
 		}
 
+		// Backward compatibility: old tokens without role are super_admin
+		role := claims.Role
+		if role == "" {
+			role = "super_admin"
+		}
+
 		c.Locals("admin_id", claims.AdminID)
 		c.Locals("username", claims.Username)
+		c.Locals("role", role)
 		return c.Next()
 	}
+}
+
+// RequireRole returns middleware that restricts access to the given roles.
+func RequireRole(roles ...string) fiber.Handler {
+	roleSet := make(map[string]bool, len(roles))
+	for _, r := range roles {
+		roleSet[r] = true
+	}
+
+	return func(c *fiber.Ctx) error {
+		role, _ := c.Locals("role").(string)
+		if !roleSet[role] {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"error": fiber.Map{
+					"code":    "FORBIDDEN",
+					"message": "Insufficient permissions",
+				},
+			})
+		}
+		return c.Next()
+	}
+}
+
+// IsSuperAdmin returns true if the current user has the super_admin role.
+func IsSuperAdmin(c *fiber.Ctx) bool {
+	role, _ := c.Locals("role").(string)
+	return role == "super_admin"
+}
+
+// IsAdmin returns true if the current user has admin or super_admin role.
+func IsAdmin(c *fiber.Ctx) bool {
+	role, _ := c.Locals("role").(string)
+	return role == "super_admin" || role == "admin"
 }

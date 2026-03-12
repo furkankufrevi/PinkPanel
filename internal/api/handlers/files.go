@@ -12,6 +12,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/pinkpanel/pinkpanel/internal/agent"
+	"github.com/pinkpanel/pinkpanel/internal/api/middleware"
 	"github.com/pinkpanel/pinkpanel/internal/core/domain"
 	"github.com/pinkpanel/pinkpanel/internal/db"
 )
@@ -38,7 +39,7 @@ func (h *FileHandler) validateFilePath(dom *domain.Domain, path string) (string,
 	return cleaned, nil
 }
 
-// getDomain is a helper to parse domain ID and fetch domain.
+// getDomain is a helper to parse domain ID, fetch domain, and check access.
 func (h *FileHandler) getDomain(c *fiber.Ctx) (*domain.Domain, error) {
 	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
@@ -47,6 +48,29 @@ func (h *FileHandler) getDomain(c *fiber.Ctx) (*domain.Domain, error) {
 	dom, err := h.DomainSvc.GetByID(domainID)
 	if err != nil {
 		return nil, fmt.Errorf("domain not found")
+	}
+	if !checkDomainAccess(c, dom) {
+		return nil, fmt.Errorf("access denied")
+	}
+	return dom, nil
+}
+
+// checkDomainOwnership is a shared helper for handlers that resolve a domain.
+// Returns the domain or sends a 403 response.
+func getDomainWithAccess(c *fiber.Ctx, svc *domain.Service) (*domain.Domain, error) {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid domain ID")
+	}
+	dom, err := svc.GetByID(domainID)
+	if err != nil {
+		return nil, fmt.Errorf("domain not found")
+	}
+	if !middleware.IsSuperAdmin(c) {
+		adminID, _ := c.Locals("admin_id").(int64)
+		if dom.AdminID == nil || *dom.AdminID != adminID {
+			return nil, fmt.Errorf("access denied")
+		}
 	}
 	return dom, nil
 }

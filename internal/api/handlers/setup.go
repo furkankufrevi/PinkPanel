@@ -119,7 +119,7 @@ func (h *SetupHandler) CreateAdmin(c *fiber.Ctx) error {
 	h.DB.Exec("UPDATE settings SET value = 'true' WHERE key = 'panel.setup_complete'")
 
 	// Generate tokens so user is logged in immediately
-	tokenPair, err := h.JWTManager.GenerateTokenPair(adminID, req.Username)
+	tokenPair, err := h.JWTManager.GenerateTokenPair(adminID, req.Username, "super_admin")
 	if err != nil {
 		// Admin created but tokens failed — they can log in manually
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{

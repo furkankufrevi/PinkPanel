@@ -116,6 +116,10 @@ api.interceptors.response.use(
       });
 
       setTokens(data);
+      // Store role if returned by refresh endpoint
+      if (data.role) {
+        localStorage.setItem("pinkpanel_role", data.role);
+      }
       processQueue(null);
 
       originalRequest.headers.Authorization = `Bearer ${data.access_token}`;
