@@ -220,6 +220,10 @@ export function DatabasesPage() {
       enableSorting: false,
       cell: ({ row }) => (
         <div className="flex items-center justify-end gap-1">
+          <Button size="sm" variant="ghost" onClick={() => openPhpMyAdmin(row.original.id)}>
+            <ExternalLink className="h-3.5 w-3.5 mr-1" />
+            phpMyAdmin
+          </Button>
           <Button
             size="sm"
             variant="ghost"
