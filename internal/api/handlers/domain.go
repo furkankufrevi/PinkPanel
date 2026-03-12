@@ -225,6 +225,9 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 		} else {
 			provisionDNSZone(h.DNSSvc, h.AgentClient, parentDomain.ID, parentDomain.Name)
 		}
+		// Clean up any stale separate zone for this subdomain (from previous creation/toggle)
+		h.AgentClient.Call("dns_remove_zone", map[string]interface{}{"domain": d.Name})
+		h.AgentClient.Call("dns_reload", nil)
 	} else {
 		// Root domain: create full DNS zone
 		if err := h.DNSSvc.CreateDefaultRecords(d.ID, d.Name, serverIP); err != nil {
@@ -694,19 +697,16 @@ func (h *DomainHandler) Delete(c *fiber.Ctx) error {
 		log.Printf("ERROR: nginx reload failed after deleting %s: %v", d.Name, err)
 	}
 
-	// Remove DNS records and zone (for root domains or subdomains with separate DNS)
+	// Remove DNS records and zone
 	if d.ParentID == nil || d.SeparateDNS {
 		if err := h.DNSSvc.DeleteByDomain(id); err != nil {
 			log.Printf("WARNING: failed to delete DNS records for %s: %v", d.Name, err)
 		}
-		_, err = h.AgentClient.Call("dns_remove_zone", map[string]interface{}{
-			"domain": d.Name,
-		})
-		if err != nil {
-			log.Printf("WARNING: failed to remove DNS zone for %s: %v", d.Name, err)
-		}
-		_, _ = h.AgentClient.Call("dns_reload", nil)
 	}
+	// Always try to remove the zone file/config — handles stale zones from
+	// previous separate_dns toggles or prior creations
+	h.AgentClient.Call("dns_remove_zone", map[string]interface{}{"domain": d.Name})
+	h.AgentClient.Call("dns_reload", nil)
 
 	// Optionally remove document root
 	removeFiles := c.Query("remove_files") == "true"

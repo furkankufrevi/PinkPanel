@@ -1125,7 +1125,12 @@ func cmdDNSReload(_ json.RawMessage) (interface{}, error) {
 }
 
 // restartBIND tries named then bind9 service names.
+// Clears any "failed" state first so systemd allows the restart.
 func restartBIND() error {
+	// Clear failed state so systemd allows restart after repeated crashes
+	exec.Command("systemctl", "reset-failed", "named").Run()
+	exec.Command("systemctl", "reset-failed", "bind9").Run()
+
 	out, err := exec.Command("systemctl", "restart", "named").CombinedOutput()
 	if err == nil {
 		return nil
@@ -1274,6 +1279,18 @@ func cmdSSLDeleteCert(params json.RawMessage) (interface{}, error) {
 
 // ---------- MySQL commands ----------
 
+// mysqlDefaultsFile is the path to the MySQL credentials file created by the installer.
+const mysqlDefaultsFile = "/etc/pinkpanel/mysql.cnf"
+
+// mysqlArgs prepends --defaults-file if the credentials file exists,
+// so all mysql/mysqldump commands authenticate correctly after secure_mariadb.
+func mysqlArgs(args ...string) []string {
+	if _, err := os.Stat(mysqlDefaultsFile); err == nil {
+		return append([]string{"--defaults-file=" + mysqlDefaultsFile}, args...)
+	}
+	return args
+}
+
 func cmdMySQLCreateDB(params json.RawMessage) (interface{}, error) {
 	var p mysqlDBParams
 	if err := json.Unmarshal(params, &p); err != nil {
@@ -1283,7 +1300,7 @@ func cmdMySQLCreateDB(params json.RawMessage) (interface{}, error) {
 		return nil, fmt.Errorf("invalid database name: %s", p.Name)
 	}
 	stmt := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;", p.Name)
-	out, err := exec.Command("mysql", "-e", stmt).CombinedOutput()
+	out, err := exec.Command("mysql", mysqlArgs("-e", stmt)...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("create database: %s", strings.TrimSpace(string(out)))
 	}
@@ -1299,7 +1316,7 @@ func cmdMySQLDropDB(params json.RawMessage) (interface{}, error) {
 		return nil, fmt.Errorf("invalid database name: %s", p.Name)
 	}
 	stmt := fmt.Sprintf("DROP DATABASE IF EXISTS `%s`;", p.Name)
-	out, err := exec.Command("mysql", "-e", stmt).CombinedOutput()
+	out, err := exec.Command("mysql", mysqlArgs("-e", stmt)...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("drop database: %s", strings.TrimSpace(string(out)))
 	}
@@ -1323,7 +1340,7 @@ func cmdMySQLCreateUser(params json.RawMessage) (interface{}, error) {
 	}
 	// Use parameterized approach — write to temp file to avoid password in command line
 	stmt := fmt.Sprintf("CREATE USER IF NOT EXISTS '%s'@'%s' IDENTIFIED BY '%s'; FLUSH PRIVILEGES;", p.Username, host, escapeMySQLString(p.Password))
-	out, err := exec.Command("mysql", "-e", stmt).CombinedOutput()
+	out, err := exec.Command("mysql", mysqlArgs("-e", stmt)...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("create user: %s", strings.TrimSpace(string(out)))
 	}
@@ -1343,7 +1360,7 @@ func cmdMySQLDropUser(params json.RawMessage) (interface{}, error) {
 		host = "localhost"
 	}
 	stmt := fmt.Sprintf("DROP USER IF EXISTS '%s'@'%s'; FLUSH PRIVILEGES;", p.Username, host)
-	out, err := exec.Command("mysql", "-e", stmt).CombinedOutput()
+	out, err := exec.Command("mysql", mysqlArgs("-e", stmt)...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("drop user: %s", strings.TrimSpace(string(out)))
 	}
@@ -1379,7 +1396,7 @@ func cmdMySQLGrant(params json.RawMessage) (interface{}, error) {
 		}
 	}
 	stmt := fmt.Sprintf("GRANT %s ON `%s`.* TO '%s'@'%s'; FLUSH PRIVILEGES;", perms, p.Database, p.Username, host)
-	out, err := exec.Command("mysql", "-e", stmt).CombinedOutput()
+	out, err := exec.Command("mysql", mysqlArgs("-e", stmt)...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("grant: %s", strings.TrimSpace(string(out)))
 	}
@@ -1405,7 +1422,7 @@ func cmdMySQLDump(params json.RawMessage) (interface{}, error) {
 		return nil, fmt.Errorf("creating output file: %w", err)
 	}
 	defer outFile.Close()
-	cmd := exec.Command("mysqldump", "--single-transaction", "--routines", "--triggers", p.Database)
+	cmd := exec.Command("mysqldump", mysqlArgs("--single-transaction", "--routines", "--triggers", p.Database)...)
 	cmd.Stdout = outFile
 	if err := cmd.Run(); err != nil {
 		os.Remove(p.Output)
@@ -1431,7 +1448,7 @@ func cmdMySQLRestore(params json.RawMessage) (interface{}, error) {
 		return nil, fmt.Errorf("opening input file: %w", err)
 	}
 	defer inFile.Close()
-	cmd := exec.Command("mysql", p.Database)
+	cmd := exec.Command("mysql", mysqlArgs(p.Database)...)
 	cmd.Stdin = inFile
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1449,7 +1466,7 @@ func cmdMySQLDBSize(params json.RawMessage) (interface{}, error) {
 		return nil, fmt.Errorf("invalid database name: %s", p.Name)
 	}
 	stmt := fmt.Sprintf("SELECT COALESCE(SUM(data_length + index_length), 0) AS size FROM information_schema.tables WHERE table_schema = '%s';", p.Name)
-	out, err := exec.Command("mysql", "-N", "-e", stmt).CombinedOutput()
+	out, err := exec.Command("mysql", mysqlArgs("-N", "-e", stmt)...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("db size: %s", strings.TrimSpace(string(out)))
 	}
