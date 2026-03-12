@@ -412,14 +412,14 @@ func (h *EmailHandler) ApplyDNSRecords(c *fiber.Ctx) error {
 	created := 0
 
 	if !hasSPF {
-		_, err := h.DNSSvc.Create(domainID, "@", "TXT", fmt.Sprintf("v=spf1 a mx ip4:%s ~all", serverIP), 3600, nil)
+		_, err := h.DNSSvc.Create(domainID, "TXT", "@", fmt.Sprintf("v=spf1 a mx ip4:%s ~all", serverIP), 3600, nil)
 		if err == nil {
 			created++
 		}
 	}
 
 	if !hasDMARC {
-		_, err := h.DNSSvc.Create(domainID, "_dmarc", "TXT", fmt.Sprintf("v=DMARC1; p=quarantine; rua=mailto:postmaster@%s", dom.Name), 3600, nil)
+		_, err := h.DNSSvc.Create(domainID, "TXT", "_dmarc", fmt.Sprintf("v=DMARC1; p=quarantine; rua=mailto:postmaster@%s", dom.Name), 3600, nil)
 		if err == nil {
 			created++
 		}
@@ -436,7 +436,7 @@ func (h *EmailHandler) ApplyDNSRecords(c *fiber.Ctx) error {
 				json.Unmarshal(raw, &dkimResult)
 			}
 			if dkimResult.PublicKey != "" {
-				_, err := h.DNSSvc.Create(domainID, dkimResult.Selector+"._domainkey", "TXT", dkimResult.PublicKey, 3600, nil)
+				_, err := h.DNSSvc.Create(domainID, "TXT", dkimResult.Selector+"._domainkey", dkimResult.PublicKey, 3600, nil)
 				if err == nil {
 					created++
 				}

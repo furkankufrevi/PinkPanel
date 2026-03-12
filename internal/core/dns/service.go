@@ -208,6 +208,10 @@ func (s *Service) CreateDefaultRecords(domainID int64, domainName, serverIP stri
 		// Mail
 		{"A", "mail", serverIP, 3600, nil},
 		{"MX", "@", fmt.Sprintf("mail.%s.", domainName), 3600, &mx10},
+		// SPF
+		{"TXT", "@", fmt.Sprintf("v=spf1 a mx ip4:%s ~all", serverIP), 3600, nil},
+		// DMARC
+		{"TXT", "_dmarc", fmt.Sprintf("v=DMARC1; p=quarantine; rua=mailto:postmaster@%s", domainName), 3600, nil},
 	}
 
 	for _, d := range defaults {
