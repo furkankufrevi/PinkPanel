@@ -109,11 +109,13 @@ run_migrations() {
 
     # Add migration entries here in order. Format:
     #   version_lt "$from_version" "X.Y.Z" && migrate_to_X_Y_Z
-    version_lt "$from_version" "0.3.0" && migrate_to_0_3_0
+    version_lt "$from_version" "0.3.0" && migrate_to_0_3_0 || true
 
     # Future migrations go here:
-    # version_lt "$from_version" "0.4.0" && migrate_to_0_4_0
-    # version_lt "$from_version" "0.5.0" && migrate_to_0_5_0
+    # version_lt "$from_version" "0.4.0" && migrate_to_0_4_0 || true
+    # version_lt "$from_version" "0.5.0" && migrate_to_0_5_0 || true
+
+    return 0
 }
 
 # ══════════════════════════════════════════════
