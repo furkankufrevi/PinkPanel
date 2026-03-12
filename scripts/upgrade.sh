@@ -202,16 +202,17 @@ migrate_mysql_auth() {
     # Switch root to unix_socket auth (agent runs as root, no password needed)
     if [[ -f /etc/pinkpanel/mysql.cnf ]]; then
         log "Migrating MySQL root auth to unix_socket..."
-        # Try authenticating with the old password file first
-        mysql --defaults-file=/etc/pinkpanel/mysql.cnf <<-SQL || mysql -u root <<-SQL2 || true
-            ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket;
-            FLUSH PRIVILEGES;
-SQL
-            ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket;
-            FLUSH PRIVILEGES;
-SQL2
+        local migrate_sql="ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket; FLUSH PRIVILEGES;"
+        # Try authenticating with the old password file first, fall back to direct root
+        if mysql --defaults-file=/etc/pinkpanel/mysql.cnf -e "$migrate_sql" 2>/dev/null; then
+            log "MySQL auth migrated via password file"
+        elif mysql -u root -e "$migrate_sql" 2>/dev/null; then
+            log "MySQL auth migrated via unix_socket"
+        else
+            warn "Could not migrate MySQL auth — manual intervention may be needed"
+        fi
         rm -f /etc/pinkpanel/mysql.cnf
-        log "MySQL auth migrated to unix_socket (removed mysql.cnf)"
+        log "Removed legacy mysql.cnf"
     fi
 }
 

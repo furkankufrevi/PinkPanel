@@ -1317,9 +1317,17 @@ func cmdSSLDeleteCert(params json.RawMessage) (interface{}, error) {
 
 // ---------- MySQL commands ----------
 
-// mysqlArgs prepends -u root for unix_socket authentication.
-// The agent runs as root, so unix_socket auth works natively.
+// mysqlDefaultsFile is the legacy path to the MySQL credentials file.
+// New installs use unix_socket auth and do not create this file.
+const mysqlDefaultsFile = "/etc/pinkpanel/mysql.cnf"
+
+// mysqlArgs prepends authentication flags for mysql/mysqldump commands.
+// If the legacy password file exists, it uses --defaults-file for backward
+// compatibility. Otherwise it relies on unix_socket auth (agent runs as root).
 func mysqlArgs(args ...string) []string {
+	if _, err := os.Stat(mysqlDefaultsFile); err == nil {
+		return append([]string{"--defaults-file=" + mysqlDefaultsFile}, args...)
+	}
 	return append([]string{"-u", "root"}, args...)
 }
 
