@@ -624,16 +624,16 @@ submission inet n       -       y       -       -       smtpd
 MASTER
     fi
 
-    # Configure Dovecot passwd-file auth if missing
-    if [[ ! -f /etc/dovecot/conf.d/auth-passwdfile.conf.ext ]]; then
-        log "Configuring Dovecot..."
-        cat > /etc/dovecot/conf.d/10-auth.conf <<'DOVEAUTH'
+    # Always ensure Dovecot is configured for virtual mailbox auth
+    # (overwrites system auth config that breaks virtual email accounts)
+    log "Configuring Dovecot for virtual mailbox auth..."
+    cat > /etc/dovecot/conf.d/10-auth.conf <<'DOVEAUTH'
 disable_plaintext_auth = no
 auth_mechanisms = plain login
 !include auth-passwdfile.conf.ext
 DOVEAUTH
 
-        cat > /etc/dovecot/conf.d/auth-passwdfile.conf.ext <<'DOVEPWD'
+    cat > /etc/dovecot/conf.d/auth-passwdfile.conf.ext <<'DOVEPWD'
 passdb {
   driver = passwd-file
   args = scheme=SHA512-CRYPT /etc/dovecot/users
@@ -644,7 +644,7 @@ userdb {
 }
 DOVEPWD
 
-        cat > /etc/dovecot/conf.d/10-mail.conf <<'DOVEMAIL'
+    cat > /etc/dovecot/conf.d/10-mail.conf <<'DOVEMAIL'
 mail_location = maildir:/var/mail/vhosts/%d/%n/Maildir
 namespace inbox {
   inbox = yes
@@ -652,7 +652,7 @@ namespace inbox {
 mail_privileged_group = vmail
 DOVEMAIL
 
-        cat > /etc/dovecot/conf.d/10-master.conf <<'DOVEMASTER'
+    cat > /etc/dovecot/conf.d/10-master.conf <<'DOVEMASTER'
 service imap-login {
   inet_listener imap {
     port = 143
@@ -685,6 +685,7 @@ service auth-worker {
 }
 DOVEMASTER
 
+    if ! grep -q "ssl_cert.*ssl-cert-snakeoil\|ssl_cert.*pinkpanel" /etc/dovecot/conf.d/10-ssl.conf 2>/dev/null; then
         cat > /etc/dovecot/conf.d/10-ssl.conf <<'DOVESSL'
 ssl = yes
 ssl_cert = </etc/ssl/certs/ssl-cert-snakeoil.pem
@@ -737,10 +738,13 @@ TRUSTED
         ufw allow 143/tcp > /dev/null 2>&1 || true
     fi
 
-    # Enable services
-    systemctl enable --now postfix > /dev/null 2>&1 || true
-    systemctl enable --now dovecot > /dev/null 2>&1 || true
-    systemctl enable --now opendkim > /dev/null 2>&1 || true
+    # Enable and restart services (restart needed to pick up config changes)
+    systemctl enable postfix > /dev/null 2>&1 || true
+    systemctl enable dovecot > /dev/null 2>&1 || true
+    systemctl enable opendkim > /dev/null 2>&1 || true
+    systemctl restart dovecot > /dev/null 2>&1 || true
+    systemctl restart postfix > /dev/null 2>&1 || true
+    systemctl restart opendkim > /dev/null 2>&1 || true
 
     log "Mail server ready"
 }
