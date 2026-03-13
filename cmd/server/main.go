@@ -417,6 +417,7 @@ func main() {
 	domainEmail.Delete("/forwarders/:fwdId", emailHandler.DeleteForwarder)
 	domainEmail.Get("/dns-records", emailHandler.GetDNSRecords)
 	domainEmail.Post("/dns-records", emailHandler.ApplyDNSRecords)
+	domainEmail.Post("/accounts/:accountId/webmail", emailHandler.Webmail)
 	adminOnly.Get("/email/queue", emailHandler.ListQueue)
 	adminOnly.Post("/email/queue/flush", emailHandler.FlushQueue)
 	adminOnly.Delete("/email/queue/:queueId", emailHandler.DeleteQueueItem)

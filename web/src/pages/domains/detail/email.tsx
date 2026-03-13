@@ -30,6 +30,7 @@ import {
   deleteEmailAccount,
   changeEmailPassword,
   toggleEmailAccount,
+  openWebmail,
   listEmailForwarders,
   createEmailForwarder,
   deleteEmailForwarder,
@@ -50,6 +51,7 @@ import {
   ShieldAlert,
   Check,
   Loader2,
+  ExternalLink,
 } from "lucide-react";
 
 export function DomainEmail() {
@@ -202,6 +204,22 @@ function AccountsSection({ domainId, domainName }: { domainId: number; domainNam
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs"
+                      onClick={async () => {
+                        try {
+                          const res = await openWebmail(domainId, account.id);
+                          window.open(res.url, "_blank");
+                        } catch {
+                          toast.error("Failed to open webmail. Change the password first to enable access.");
+                        }
+                      }}
+                    >
+                      <ExternalLink className="h-3 w-3 mr-1" />
+                      Inbox
+                    </Button>
                     <Switch
                       checked={account.enabled}
                       onCheckedChange={(checked) =>

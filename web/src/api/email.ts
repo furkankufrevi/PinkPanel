@@ -62,6 +62,12 @@ export async function toggleEmailAccount(domainId: number, accountId: number, en
   await api.put(`/domains/${domainId}/email/accounts/${accountId}/toggle`, { enabled });
 }
 
+// Webmail
+export async function openWebmail(domainId: number, accountId: number) {
+  const res = await api.post<{ url: string }>(`/domains/${domainId}/email/accounts/${accountId}/webmail`);
+  return res.data;
+}
+
 // Forwarders
 export async function listEmailForwarders(domainId: number) {
   const res = await api.get<{ data: EmailForwarder[] }>(`/domains/${domainId}/email/forwarders`);

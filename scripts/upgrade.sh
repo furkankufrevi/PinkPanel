@@ -357,6 +357,7 @@ install_missing_packages() {
     command -v postfix &>/dev/null || missing+=("postfix")
     command -v dovecot &>/dev/null || missing+=("dovecot-core" "dovecot-imapd" "dovecot-lmtpd")
     command -v opendkim-genkey &>/dev/null || missing+=("opendkim" "opendkim-tools")
+    dpkg -l roundcube-core &>/dev/null 2>&1 || missing+=("roundcube" "roundcube-plugins")
     if (( ${#missing[@]} > 0 )); then
         log "Installing missing packages: ${missing[*]}..."
         export DEBIAN_FRONTEND=noninteractive
@@ -732,6 +733,102 @@ TRUSTED
     log "Mail server ready"
 }
 
+# ── Roundcube Webmail setup ────────────────
+setup_roundcube() {
+    log "Checking Roundcube Webmail..."
+
+    # Create token directory
+    mkdir -p /var/lib/pinkpanel/roundcube-tokens
+    chown www-data:www-data /var/lib/pinkpanel/roundcube-tokens
+    chmod 755 /var/lib/pinkpanel/roundcube-tokens
+
+    # Configure Roundcube
+    local rc_config="/etc/roundcube/config.inc.php"
+    if [[ -f "$rc_config" ]]; then
+        if ! grep -q "imap_host.*localhost" "$rc_config"; then
+            sed -i "s|\\\$config\['imap_host'\].*|\\\$config['imap_host'] = ['localhost:143'];|" "$rc_config"
+        fi
+        if ! grep -q "smtp_host.*localhost" "$rc_config"; then
+            sed -i "s|\\\$config\['smtp_host'\].*|\\\$config['smtp_host'] = 'localhost:587';|" "$rc_config"
+        fi
+        if ! grep -q "PinkPanel" "$rc_config"; then
+            echo "\$config['product_name'] = 'PinkPanel Webmail';" >> "$rc_config"
+        fi
+    fi
+
+    # Deploy signon.php
+    if [[ -d /usr/share/roundcube ]]; then
+        cat > /usr/share/roundcube/signon.php <<'RCSIGNON'
+<?php
+$token = isset($_GET['token']) ? preg_replace('/[^a-f0-9]/', '', $_GET['token']) : '';
+if (!$token) { die('Missing token'); }
+
+$tokenFile = '/var/lib/pinkpanel/roundcube-tokens/' . $token . '.json';
+if (!file_exists($tokenFile)) { die('Invalid or expired token. Please try again from the panel.'); }
+
+$data = json_decode(file_get_contents($tokenFile), true);
+@unlink($tokenFile);
+
+if (!$data || empty($data['username']) || empty($data['password'])) { die('Invalid token data'); }
+
+$_POST['_user'] = $data['username'];
+$_POST['_pass'] = $data['password'];
+$_POST['_task'] = 'login';
+$_POST['_action'] = 'login';
+
+define('INSTALL_PATH', '/usr/share/roundcube/');
+require_once INSTALL_PATH . 'program/include/iniset.php';
+$rcmail = rcmail::get_instance(0, 'web');
+$rcmail->set_user(new rcube_user(null));
+$auth = $rcmail->login($data['username'], $data['password'], 'localhost', false);
+if ($auth) { header('Location: /roundcube/?_task=mail'); } else { die('Login failed.'); }
+exit;
+RCSIGNON
+        chown www-data:www-data /usr/share/roundcube/signon.php
+    fi
+
+    # Create NGINX config
+    if [[ ! -f /etc/nginx/snippets/roundcube.conf ]]; then
+        local php_sock
+        php_sock=$(ls /run/php/php*-fpm.sock 2>/dev/null | head -1)
+        [[ -z "$php_sock" ]] && php_sock="/run/php/php-fpm.sock"
+
+        cat > /etc/nginx/snippets/roundcube.conf <<RCNGINX
+location /roundcube/ {
+    alias /usr/share/roundcube/public_html/;
+    index index.php;
+
+    location ~ ^/roundcube/(.*\\.php)\$ {
+        alias /usr/share/roundcube/public_html/\$1;
+        fastcgi_pass unix:${php_sock};
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME /usr/share/roundcube/public_html/\$1;
+        include fastcgi_params;
+    }
+}
+
+location ~ ^/roundcube/(config|temp|logs) {
+    deny all;
+}
+RCNGINX
+
+        for f in /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default; do
+            if [[ -f "$f" ]] && ! grep -q "roundcube" "$f"; then
+                sed -i '/server_name _;/a\\n\tinclude snippets/roundcube.conf;' "$f"
+            fi
+        done
+    fi
+
+    # Ensure public_html exists
+    if [[ -d /usr/share/roundcube ]] && [[ ! -d /usr/share/roundcube/public_html ]]; then
+        ln -sf /usr/share/roundcube /usr/share/roundcube/public_html 2>/dev/null || true
+    fi
+
+    nginx -t > /dev/null 2>&1 && systemctl reload nginx > /dev/null 2>&1 || true
+
+    log "Roundcube Webmail ready"
+}
+
 # ── Always-run fixups (run even when version matches) ──
 install_missing_packages
 fix_bind
@@ -740,6 +837,7 @@ setup_phpmyadmin
 setup_modsecurity
 setup_fail2ban
 setup_mail
+setup_roundcube
 
 # ── Run version-specific migrations ────────
 if [[ "$SKIP_BINARY" == false ]]; then

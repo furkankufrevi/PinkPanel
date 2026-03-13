@@ -2,6 +2,7 @@ package email
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"regexp"
 )
@@ -68,6 +69,29 @@ func (s *Service) GetAccountByID(id int64) (*Account, error) {
 	}
 	a.Enabled = enabled == 1
 	return &a, nil
+}
+
+// StorePassword stores an encoded password for webmail SSO.
+func (s *Service) StorePassword(accountID int64, password string) error {
+	enc := base64.StdEncoding.EncodeToString([]byte(password))
+	_, err := s.DB.Exec(`UPDATE email_accounts SET password_enc = ? WHERE id = ?`, enc, accountID)
+	return err
+}
+
+// GetPassword decodes the stored password for an account.
+func (s *Service) GetPassword(accountID int64) (string, error) {
+	var enc sql.NullString
+	if err := s.DB.QueryRow(`SELECT password_enc FROM email_accounts WHERE id = ?`, accountID).Scan(&enc); err != nil {
+		return "", fmt.Errorf("account not found")
+	}
+	if !enc.Valid || enc.String == "" {
+		return "", fmt.Errorf("no stored password for this account")
+	}
+	b, err := base64.StdEncoding.DecodeString(enc.String)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 func (s *Service) CreateAccount(domainID int64, address string, quotaMB int64) (*Account, error) {

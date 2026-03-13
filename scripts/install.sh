@@ -829,6 +829,131 @@ TRUSTED
     log "Mail server configured (Postfix + Dovecot + OpenDKIM)"
 }
 
+# Roundcube Webmail
+# ---------------------------------------------------------------------------
+
+setup_roundcube() {
+    log "Setting up Roundcube Webmail..."
+
+    export DEBIAN_FRONTEND=noninteractive
+    echo "roundcube-core roundcube/dbconfig-install boolean true" | debconf-set-selections
+    echo "roundcube-core roundcube/database-type select sqlite3" | debconf-set-selections
+    apt-get install -y -qq roundcube roundcube-plugins > /dev/null 2>&1 || {
+        warn "Roundcube package not available — skipping"
+        return
+    }
+
+    # Create token directory
+    mkdir -p /var/lib/pinkpanel/roundcube-tokens
+    chown www-data:www-data /var/lib/pinkpanel/roundcube-tokens
+    chmod 755 /var/lib/pinkpanel/roundcube-tokens
+
+    # Configure Roundcube
+    local rc_config="/etc/roundcube/config.inc.php"
+    if [[ -f "$rc_config" ]]; then
+        # Set IMAP host
+        if ! grep -q "imap_host.*localhost" "$rc_config"; then
+            sed -i "s|\\\$config\['imap_host'\].*|\\\$config['imap_host'] = ['localhost:143'];|" "$rc_config"
+        fi
+        # Set SMTP host
+        if ! grep -q "smtp_host.*localhost" "$rc_config"; then
+            sed -i "s|\\\$config\['smtp_host'\].*|\\\$config['smtp_host'] = 'localhost:587';|" "$rc_config"
+        fi
+        # Set product name
+        if ! grep -q "PinkPanel" "$rc_config"; then
+            echo "\$config['product_name'] = 'PinkPanel Webmail';" >> "$rc_config"
+        fi
+    fi
+
+    # Deploy signon.php script for auto-login
+    cat > /usr/share/roundcube/signon.php <<'RCSIGNON'
+<?php
+$token = isset($_GET['token']) ? preg_replace('/[^a-f0-9]/', '', $_GET['token']) : '';
+if (!$token) {
+    die('Missing token');
+}
+
+$tokenFile = '/var/lib/pinkpanel/roundcube-tokens/' . $token . '.json';
+if (!file_exists($tokenFile)) {
+    die('Invalid or expired token. Please try again from the panel.');
+}
+
+$data = json_decode(file_get_contents($tokenFile), true);
+@unlink($tokenFile);
+
+if (!$data || empty($data['username']) || empty($data['password'])) {
+    die('Invalid token data');
+}
+
+// Set environment variables that Roundcube can read
+$_POST['_user'] = $data['username'];
+$_POST['_pass'] = $data['password'];
+$_POST['_task'] = 'login';
+$_POST['_action'] = 'login';
+
+// Include Roundcube bootstrap
+define('INSTALL_PATH', '/usr/share/roundcube/');
+require_once INSTALL_PATH . 'program/include/iniset.php';
+
+$rcmail = rcmail::get_instance(0, 'web');
+$rcmail->set_user(new rcube_user(null));
+
+// Perform login
+$auth = $rcmail->login($data['username'], $data['password'], 'localhost', false);
+if ($auth) {
+    header('Location: /roundcube/?_task=mail');
+} else {
+    die('Login failed. The password may have changed. Please update it from the panel.');
+}
+exit;
+RCSIGNON
+    chown www-data:www-data /usr/share/roundcube/signon.php
+
+    # Create NGINX config for Roundcube
+    local php_sock
+    php_sock=$(ls /run/php/php*-fpm.sock 2>/dev/null | head -1)
+    [[ -z "$php_sock" ]] && php_sock="/run/php/php-fpm.sock"
+
+    cat > /etc/nginx/snippets/roundcube.conf <<RCNGINX
+location /roundcube/ {
+    alias /usr/share/roundcube/public_html/;
+    index index.php;
+
+    location ~ ^/roundcube/(.*\\.php)\$ {
+        alias /usr/share/roundcube/public_html/\$1;
+        fastcgi_pass unix:${php_sock};
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME /usr/share/roundcube/public_html/\$1;
+        include fastcgi_params;
+    }
+}
+
+# Fallback: some distros put files directly in /usr/share/roundcube/
+location ~ ^/roundcube/(config|temp|logs) {
+    deny all;
+}
+RCNGINX
+
+    # Include in default NGINX server block
+    for f in /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default; do
+        if [[ -f "$f" ]] && ! grep -q "roundcube" "$f"; then
+            sed -i '/server_name _;/a\\n\tinclude snippets/roundcube.conf;' "$f"
+        fi
+    done
+
+    # Roundcube may install to different paths depending on distro
+    # Debian/Ubuntu uses /usr/share/roundcube with public_html symlink
+    if [[ ! -d /usr/share/roundcube/public_html ]]; then
+        # Create public_html as symlink to the main dir if it doesn't exist
+        ln -sf /usr/share/roundcube /usr/share/roundcube/public_html 2>/dev/null || true
+    fi
+
+    nginx -t > /dev/null 2>&1 && systemctl reload nginx || warn "NGINX config test failed after Roundcube setup"
+
+    log "Roundcube Webmail configured at /roundcube/ with auto-login"
+}
+
+# ---------------------------------------------------------------------------
 # Firewall
 # ---------------------------------------------------------------------------
 
@@ -944,6 +1069,7 @@ main() {
     secure_mariadb
     setup_phpmyadmin
     setup_mail
+    setup_roundcube
     setup_firewall
     setup_modsecurity
     setup_fail2ban

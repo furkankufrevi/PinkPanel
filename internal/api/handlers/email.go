@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -88,6 +90,11 @@ func (h *EmailHandler) CreateAccount(c *fiber.Ctx) error {
 			log.Error().Err(rollbackErr).Msg("failed to rollback email account creation")
 		}
 		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "validation_error", "message": err.Error()}})
+	}
+
+	// Store encrypted password for webmail SSO
+	if err := h.EmailSvc.StorePassword(account.ID, req.Password); err != nil {
+		log.Error().Err(err).Msg("failed to store email password for webmail")
 	}
 
 	// Update Postfix virtual maps
@@ -198,6 +205,11 @@ func (h *EmailHandler) ChangePassword(c *fiber.Ctx) error {
 		"password": req.Password,
 	}); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "agent_error", "message": "failed to change password: " + err.Error()}})
+	}
+
+	// Update stored password for webmail SSO
+	if err := h.EmailSvc.StorePassword(accountID, req.Password); err != nil {
+		log.Error().Err(err).Msg("failed to update stored email password")
 	}
 
 	return c.JSON(fiber.Map{"status": "ok"})
@@ -493,6 +505,74 @@ func (h *EmailHandler) DeleteQueueItem(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"status": "ok"})
+}
+
+// ---------- Webmail ----------
+
+// Webmail generates a one-time Roundcube signon token for auto-login.
+func (h *EmailHandler) Webmail(c *fiber.Ctx) error {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid domain ID"}})
+	}
+
+	accountID, err := strconv.ParseInt(c.Params("accountId"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid account ID"}})
+	}
+
+	account, err := h.EmailSvc.GetAccountByID(accountID)
+	if err != nil || account.DomainID != domainID {
+		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "email account not found"}})
+	}
+
+	dom, err := h.DomainSvc.GetByID(domainID)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "domain not found"}})
+	}
+
+	password, err := h.EmailSvc.GetPassword(accountID)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "no_password", "message": "No stored password. Change the account password first to enable webmail access."}})
+	}
+
+	// Generate one-time token
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "internal_error", "message": "failed to generate token"}})
+	}
+	token := hex.EncodeToString(tokenBytes)
+
+	fullEmail := account.Address + "@" + dom.Name
+	tokenData, _ := json.Marshal(map[string]string{
+		"username": fullEmail,
+		"password": password,
+	})
+
+	// Write token file via agent
+	tokenPath := fmt.Sprintf("/var/lib/pinkpanel/roundcube-tokens/%s.json", token)
+	if _, err := h.AgentClient.Call("dir_create", map[string]any{
+		"path": "/var/lib/pinkpanel/roundcube-tokens", "mode": "0755",
+	}); err != nil {
+		log.Error().Err(err).Msg("failed to create roundcube-tokens directory")
+	}
+	if _, err := h.AgentClient.Call("set_ownership", map[string]any{
+		"owner": "www-data", "group": "www-data", "path": "/var/lib/pinkpanel/roundcube-tokens",
+	}); err != nil {
+		log.Error().Err(err).Msg("failed to chown roundcube-tokens directory")
+	}
+	if _, err := h.AgentClient.Call("file_write", map[string]any{
+		"path": tokenPath, "content": string(tokenData), "mode": "0644",
+	}); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "agent_error", "message": "failed to write signon token"}})
+	}
+
+	adminID, _ := c.Locals("admin_id").(int64)
+	db.LogActivity(h.DB, adminID, "webmail_login", "email", accountID, fullEmail, c.IP())
+
+	return c.JSON(fiber.Map{
+		"url": fmt.Sprintf("/roundcube/signon.php?token=%s", token),
+	})
 }
 
 // ---------- Helpers ----------
