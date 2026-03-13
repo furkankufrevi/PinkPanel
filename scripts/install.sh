@@ -105,7 +105,7 @@ install_packages() {
         libmodsecurity3 \
         git \
         postfix \
-        dovecot-core dovecot-imapd dovecot-lmtpd \
+        dovecot-core dovecot-imapd dovecot-lmtpd dovecot-sieve dovecot-managesieved \
         opendkim opendkim-tools \
         > /dev/null
 
