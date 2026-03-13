@@ -15,7 +15,9 @@ import (
 	"github.com/pinkpanel/pinkpanel/internal/core/dns"
 	"github.com/pinkpanel/pinkpanel/internal/core/domain"
 	"github.com/pinkpanel/pinkpanel/internal/core/email"
+	sslpkg "github.com/pinkpanel/pinkpanel/internal/core/ssl"
 	"github.com/pinkpanel/pinkpanel/internal/db"
+	tmpl "github.com/pinkpanel/pinkpanel/internal/template"
 )
 
 type EmailHandler struct {
@@ -24,6 +26,7 @@ type EmailHandler struct {
 	DomainSvc   *domain.Service
 	DNSSvc      *dns.Service
 	AgentClient *agent.Client
+	ACMESvc     *sslpkg.ACMEService
 }
 
 // ---------- Accounts ----------
@@ -816,10 +819,119 @@ func (h *EmailHandler) SetupAutodiscovery(c *fiber.Ctx) error {
 		h.regenerateZone(domainID, dom.Name)
 	}
 
+	// Create mail vhost + SSL cert for mail.<domain>
+	mailDomain := "mail." + dom.Name
+	go h.setupMailVhost(mailDomain, dom.DocumentRoot)
+
 	adminID, _ := c.Locals("admin_id").(int64)
 	db.LogActivity(h.DB, adminID, "setup_autodiscovery", "email", domainID, fmt.Sprintf("%d DNS records created", created), c.IP())
 
 	return c.JSON(fiber.Map{"status": "ok", "created": created})
+}
+
+// setupMailVhost creates an nginx vhost for mail.<domain> with SSL.
+// Runs async — first creates HTTP-only vhost (for ACME challenge), issues SSL, then upgrades to HTTPS.
+func (h *EmailHandler) setupMailVhost(mailDomain, documentRoot string) {
+	configPath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", mailDomain)
+	enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", mailDomain)
+
+	// Step 1: Create HTTP-only mail vhost (needed for ACME HTTP-01 challenge)
+	httpVhost, err := tmpl.RenderNginxMailVhost(tmpl.NginxMailVhostData{
+		Domain: mailDomain,
+	})
+	if err != nil {
+		log.Error().Err(err).Str("domain", mailDomain).Msg("failed to render mail vhost")
+		return
+	}
+
+	if _, err := h.AgentClient.Call("file_write", map[string]any{
+		"path": configPath, "content": httpVhost, "mode": "0644",
+	}); err != nil {
+		log.Error().Err(err).Msg("failed to write mail nginx config")
+		return
+	}
+	if _, err := h.AgentClient.Call("file_write", map[string]any{
+		"path": enabledPath, "content": httpVhost, "mode": "0644",
+	}); err != nil {
+		log.Error().Err(err).Msg("failed to write mail nginx enabled config")
+		return
+	}
+	if _, err := h.AgentClient.Call("nginx_test", nil); err != nil {
+		log.Error().Err(err).Msg("mail vhost nginx test failed")
+		return
+	}
+	if _, err := h.AgentClient.Call("nginx_reload", nil); err != nil {
+		log.Error().Err(err).Msg("failed to reload nginx for mail vhost")
+		return
+	}
+
+	// Step 2: Issue SSL certificate for mail.<domain>
+	if h.ACMESvc == nil {
+		log.Warn().Str("domain", mailDomain).Msg("ACME service not configured, mail vhost created without SSL")
+		return
+	}
+
+	// Use /var/www/html as webroot since the mail vhost uses that for ACME challenges
+	issued, err := h.ACMESvc.IssueCertificate([]string{mailDomain}, "/var/www/html")
+	if err != nil {
+		log.Error().Err(err).Str("domain", mailDomain).Msg("failed to issue SSL for mail domain")
+		return
+	}
+
+	// Write cert files via agent
+	resp, err := h.AgentClient.Call("ssl_write_cert", map[string]any{
+		"domain": mailDomain,
+		"cert":   issued.Certificate,
+		"key":    issued.PrivateKey,
+		"chain":  issued.IssuerCert,
+	})
+	if err != nil {
+		log.Error().Err(err).Msg("failed to write mail SSL cert files")
+		return
+	}
+
+	result, _ := resp.Result.(map[string]interface{})
+	certPath, _ := result["cert_path"].(string)
+	keyPath, _ := result["key_path"].(string)
+	chainPath := ""
+	if cp, ok := result["chain_path"].(string); ok {
+		chainPath = cp
+	}
+
+	// Step 3: Update vhost with SSL
+	sslVhost, err := tmpl.RenderNginxMailVhost(tmpl.NginxMailVhostData{
+		Domain:       mailDomain,
+		SSLEnabled:   true,
+		SSLCertPath:  certPath,
+		SSLKeyPath:   keyPath,
+		SSLChainPath: chainPath,
+	})
+	if err != nil {
+		log.Error().Err(err).Msg("failed to render SSL mail vhost")
+		return
+	}
+
+	if _, err := h.AgentClient.Call("file_write", map[string]any{
+		"path": configPath, "content": sslVhost, "mode": "0644",
+	}); err != nil {
+		log.Error().Err(err).Msg("failed to write SSL mail nginx config")
+		return
+	}
+	if _, err := h.AgentClient.Call("file_write", map[string]any{
+		"path": enabledPath, "content": sslVhost, "mode": "0644",
+	}); err != nil {
+		log.Error().Err(err).Msg("failed to write SSL mail nginx enabled config")
+		return
+	}
+	if _, err := h.AgentClient.Call("nginx_test", nil); err != nil {
+		log.Error().Err(err).Msg("SSL mail vhost nginx test failed")
+		return
+	}
+	if _, err := h.AgentClient.Call("nginx_reload", nil); err != nil {
+		log.Error().Err(err).Msg("failed to reload nginx after mail SSL")
+	}
+
+	log.Info().Str("domain", mailDomain).Msg("mail vhost with SSL created successfully")
 }
 
 // ---------- Webmail ----------

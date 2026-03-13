@@ -301,6 +301,100 @@ const nginxSuspendedTemplate = `server {
 }
 `
 
+// NginxMailVhostData holds configuration for a mail subdomain vhost (webmail proxy).
+type NginxMailVhostData struct {
+	Domain       string // e.g. "mail.example.com"
+	SSLEnabled   bool
+	SSLCertPath  string
+	SSLKeyPath   string
+	SSLChainPath string
+}
+
+const nginxMailVhostTemplate = `server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ .Domain }};
+
+    # Allow ACME challenge for Let's Encrypt
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        allow all;
+        default_type "text/plain";
+    }
+{{- if .SSLEnabled }}
+
+    # Redirect HTTP to HTTPS
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name {{ .Domain }};
+
+    ssl_certificate {{ .SSLCertPath }};
+    ssl_certificate_key {{ .SSLKeyPath }};
+{{- if .SSLChainPath }}
+    ssl_trusted_certificate {{ .SSLChainPath }};
+{{- end }}
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    # HSTS
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+
+    # Security headers
+    add_header X-Frame-Options SAMEORIGIN always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-XSS-Protection "1; mode=block" always;
+
+    # Allow ACME challenge for Let's Encrypt
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        allow all;
+        default_type "text/plain";
+    }
+
+    # Roundcube webmail
+    include snippets/roundcube.conf;
+
+    location / {
+        return 301 https://$host/roundcube/;
+    }
+}
+{{- else }}
+
+    # Roundcube webmail (HTTP only)
+    include snippets/roundcube.conf;
+
+    location / {
+        return 301 http://$host/roundcube/;
+    }
+}
+{{- end }}
+`
+
+// RenderNginxMailVhost renders an NGINX vhost for the mail subdomain (webmail).
+func RenderNginxMailVhost(data NginxMailVhostData) (string, error) {
+	tmpl, err := template.New("nginx-mail-vhost").Parse(nginxMailVhostTemplate)
+	if err != nil {
+		return "", err
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", err
+	}
+
+	return buf.String(), nil
+}
+
 // RenderNginxVhost renders an NGINX virtual host configuration from the given data.
 func RenderNginxVhost(data NginxVhostData) (string, error) {
 	tmpl, err := template.New("nginx-vhost").Parse(nginxVhostTemplate)

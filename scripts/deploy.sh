@@ -144,7 +144,7 @@ setup_system() {
         useradd -r -s /usr/sbin/nologin -d "$PINKPANEL_HOME" "$PINKPANEL_USER"
     fi
 
-    mkdir -p "$PINKPANEL_HOME/bin" "$PINKPANEL_DATA" "$PINKPANEL_DATA/acme" "$PINKPANEL_LOG" \
+    mkdir -p "$PINKPANEL_HOME/bin" "$PINKPANEL_DATA" "$PINKPANEL_DATA/acme" "$PINKPANEL_DATA/git" "$PINKPANEL_LOG" \
              /var/run/pinkpanel /var/backups/pinkpanel /var/www /etc/pinkpanel
 
     # Stop existing services before replacing binaries (avoids "Text file busy")

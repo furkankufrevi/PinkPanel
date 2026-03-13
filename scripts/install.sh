@@ -103,6 +103,7 @@ install_packages() {
         ufw \
         fail2ban \
         libmodsecurity3 \
+        git \
         postfix \
         dovecot-core dovecot-imapd dovecot-lmtpd \
         opendkim opendkim-tools \
@@ -154,6 +155,7 @@ setup_directories() {
     mkdir -p /var/www
     mkdir -p /etc/pinkpanel
     mkdir -p "$PINKPANEL_DATA/acme"
+    mkdir -p "$PINKPANEL_DATA/git"
 
     chown -R "$PINKPANEL_USER:$PINKPANEL_USER" "$PINKPANEL_HOME" "$PINKPANEL_DATA" "$PINKPANEL_LOG" /var/run/pinkpanel /var/backups/pinkpanel
     log "Directories created"

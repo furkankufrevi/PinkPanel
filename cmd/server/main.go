@@ -27,6 +27,7 @@ import (
 	"github.com/pinkpanel/pinkpanel/internal/core/backup"
 	"github.com/pinkpanel/pinkpanel/internal/core/ftp"
 	emailpkg "github.com/pinkpanel/pinkpanel/internal/core/email"
+	gitpkg "github.com/pinkpanel/pinkpanel/internal/core/git"
 	sslpkg "github.com/pinkpanel/pinkpanel/internal/core/ssl"
 	"github.com/pinkpanel/pinkpanel/internal/core/user"
 	"github.com/pinkpanel/pinkpanel/internal/db"
@@ -39,7 +40,7 @@ import (
 //go:embed all:static
 var embeddedFiles embed.FS
 
-var version = "0.6.11-alpha"
+var version = "0.6.2"
 
 func main() {
 	// Parse flags
@@ -255,6 +256,16 @@ func main() {
 		DomainSvc:   domainSvc,
 		DNSSvc:      dnsSvc,
 		AgentClient: agentClient,
+		ACMESvc:     acmeSvc,
+	}
+
+	// Git service & handler
+	gitSvc := &gitpkg.Service{DB: database}
+	gitHandler := &handlers.GitHandler{
+		DB:          database,
+		GitSvc:      gitSvc,
+		DomainSvc:   domainSvc,
+		AgentClient: agentClient,
 	}
 
 	// Security handler (Fail2ban)
@@ -442,6 +453,18 @@ func main() {
 	adminOnly.Delete("/email/queue/:queueId", emailHandler.DeleteQueueItem)
 	adminOnly.Get("/email/clamav", emailHandler.GetClamAVStatus)
 	adminOnly.Put("/email/clamav", emailHandler.ToggleClamAV)
+
+	// Git routes
+	protected.Get("/domains/:id/git", gitHandler.ListRepos)
+	protected.Post("/domains/:id/git", gitHandler.CreateRepo)
+	protected.Get("/domains/:id/git/:repoId", gitHandler.GetRepo)
+	protected.Put("/domains/:id/git/:repoId", gitHandler.UpdateRepo)
+	protected.Delete("/domains/:id/git/:repoId", gitHandler.DeleteRepo)
+	protected.Post("/domains/:id/git/:repoId/deploy", gitHandler.TriggerDeploy)
+	protected.Get("/domains/:id/git/:repoId/deployments", gitHandler.ListDeployments)
+
+	// Git webhook (public, no auth)
+	api.Post("/git/webhook/:secret", gitHandler.WebhookHandler)
 
 	// File manager routes
 	protected.Get("/domains/:id/files", fileHandler.List)

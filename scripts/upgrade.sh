@@ -103,6 +103,16 @@ migrate_to_0_3_0() {
     log "Migrations for 0.3.0 complete"
 }
 
+migrate_to_0_6_2() {
+    log "Running migrations for 0.6.2..."
+
+    # --- Git integration data directory ---
+    mkdir -p "$PINKPANEL_DATA/git"
+    chown pinkpanel:pinkpanel "$PINKPANEL_DATA/git" 2>/dev/null || true
+
+    log "Migrations for 0.6.2 complete"
+}
+
 # ── Run all applicable migrations ──────────
 run_migrations() {
     local from_version="$1"
@@ -111,9 +121,7 @@ run_migrations() {
     #   version_lt "$from_version" "X.Y.Z" && migrate_to_X_Y_Z
     version_lt "$from_version" "0.3.0" && migrate_to_0_3_0 || true
 
-    # Future migrations go here:
-    # version_lt "$from_version" "0.4.0" && migrate_to_0_4_0 || true
-    # version_lt "$from_version" "0.5.0" && migrate_to_0_5_0 || true
+    version_lt "$from_version" "0.6.2" && migrate_to_0_6_2 || true
 
     return 0
 }
@@ -350,6 +358,7 @@ PMA
 # ── Ensure required packages ────────────────
 install_missing_packages() {
     local missing=()
+    command -v git &>/dev/null || missing+=("git")
     command -v zip &>/dev/null || missing+=("zip")
     command -v unzip &>/dev/null || missing+=("unzip")
     command -v fail2ban-client &>/dev/null || missing+=("fail2ban")

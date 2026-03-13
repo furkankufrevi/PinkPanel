@@ -144,6 +144,14 @@ func (r *CommandRegistry) registerBuiltins() {
 	// Mail SSL
 	r.commands["email_configure_ssl"] = cmdEmailConfigureSSL
 	r.commands["email_ssl_status"] = cmdEmailSSLStatus
+
+	// Git
+	r.commands["git_clone"] = cmdGitClone
+	r.commands["git_pull"] = cmdGitPull
+	r.commands["git_init_bare"] = cmdGitInitBare
+	r.commands["git_deploy"] = cmdGitDeploy
+	r.commands["git_log"] = cmdGitLog
+	r.commands["git_setup_hook"] = cmdGitSetupHook
 }
 
 // ---------- Param types ----------
@@ -2928,6 +2936,281 @@ func cmdEmailSSLStatus(params json.RawMessage) (interface{}, error) {
 }
 
 // ---------- Helpers ----------
+
+// ---------- Git commands ----------
+
+type gitCloneParams struct {
+	URL    string `json:"url"`
+	Path   string `json:"path"`
+	Branch string `json:"branch"`
+}
+
+func cmdGitClone(params json.RawMessage) (interface{}, error) {
+	var p gitCloneParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if p.URL == "" || p.Path == "" {
+		return nil, fmt.Errorf("url and path are required")
+	}
+	if err := validatePath(p.Path); err != nil {
+		return nil, err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(p.Path), 0755); err != nil {
+		return nil, fmt.Errorf("creating parent directory: %w", err)
+	}
+
+	args := []string{"clone"}
+	if p.Branch != "" {
+		args = append(args, "--branch", p.Branch)
+	}
+	args = append(args, "--single-branch", p.URL, p.Path)
+
+	out, err := exec.Command("git", args...).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("git clone failed: %s", strings.TrimSpace(string(out)))
+	}
+	return map[string]any{"output": strings.TrimSpace(string(out))}, nil
+}
+
+type gitPullParams struct {
+	Path   string `json:"path"`
+	Branch string `json:"branch"`
+}
+
+func cmdGitPull(params json.RawMessage) (interface{}, error) {
+	var p gitPullParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if p.Path == "" {
+		return nil, fmt.Errorf("path is required")
+	}
+	if err := validatePath(p.Path); err != nil {
+		return nil, err
+	}
+
+	args := []string{"-C", p.Path, "pull", "origin"}
+	if p.Branch != "" {
+		args = append(args, p.Branch)
+	}
+
+	out, err := exec.Command("git", args...).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("git pull failed: %s", strings.TrimSpace(string(out)))
+	}
+	return map[string]any{"output": strings.TrimSpace(string(out))}, nil
+}
+
+type gitInitBareParams struct {
+	Path string `json:"path"`
+}
+
+func cmdGitInitBare(params json.RawMessage) (interface{}, error) {
+	var p gitInitBareParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if p.Path == "" {
+		return nil, fmt.Errorf("path is required")
+	}
+	if err := validatePath(p.Path); err != nil {
+		return nil, err
+	}
+
+	if err := os.MkdirAll(p.Path, 0755); err != nil {
+		return nil, fmt.Errorf("creating directory: %w", err)
+	}
+
+	out, err := exec.Command("git", "init", "--bare", p.Path).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("git init --bare failed: %s", strings.TrimSpace(string(out)))
+	}
+	return map[string]any{"output": strings.TrimSpace(string(out))}, nil
+}
+
+type gitDeployParams struct {
+	RepoPath      string `json:"repo_path"`
+	DeployPath    string `json:"deploy_path"`
+	PostDeployCmd string `json:"post_deploy_cmd"`
+}
+
+func cmdGitDeploy(params json.RawMessage) (interface{}, error) {
+	var p gitDeployParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if p.RepoPath == "" || p.DeployPath == "" {
+		return nil, fmt.Errorf("repo_path and deploy_path are required")
+	}
+	if err := validatePath(p.RepoPath); err != nil {
+		return nil, err
+	}
+	if err := validatePath(p.DeployPath); err != nil {
+		return nil, err
+	}
+
+	if err := os.MkdirAll(p.DeployPath, 0755); err != nil {
+		return nil, fmt.Errorf("creating deploy directory: %w", err)
+	}
+
+	var allOutput string
+
+	// Use rsync to deploy files from the working tree
+	// For bare repos, we need to use git archive; for working trees, rsync
+	isBare := false
+	if _, err := os.Stat(filepath.Join(p.RepoPath, "HEAD")); err == nil {
+		if _, err := os.Stat(filepath.Join(p.RepoPath, ".git")); os.IsNotExist(err) {
+			isBare = true
+		}
+	}
+
+	if isBare {
+		// For bare repos, use git archive to extract files
+		cmd := exec.Command("git", "-C", p.RepoPath, "archive", "HEAD")
+		tarCmd := exec.Command("tar", "-xf", "-", "-C", p.DeployPath)
+		pipe, err := cmd.StdoutPipe()
+		if err != nil {
+			return nil, fmt.Errorf("creating pipe: %w", err)
+		}
+		tarCmd.Stdin = pipe
+		if err := cmd.Start(); err != nil {
+			return nil, fmt.Errorf("git archive failed to start: %w", err)
+		}
+		tarOut, tarErr := tarCmd.CombinedOutput()
+		if err := cmd.Wait(); err != nil {
+			return nil, fmt.Errorf("git archive failed: %w", err)
+		}
+		if tarErr != nil {
+			return nil, fmt.Errorf("tar extract failed: %s", strings.TrimSpace(string(tarOut)))
+		}
+		allOutput += "Extracted files from bare repo\n"
+	} else {
+		// For working trees, rsync excluding .git
+		out, err := exec.Command("rsync", "-a", "--delete", "--exclude", ".git", p.RepoPath+"/", p.DeployPath+"/").CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("rsync failed: %s", strings.TrimSpace(string(out)))
+		}
+		allOutput += "Synced files to deploy path\n"
+	}
+
+	// Get latest commit hash
+	var commitHash string
+	gitDir := p.RepoPath
+	if !isBare {
+		gitDir = filepath.Join(p.RepoPath, ".git")
+	}
+	if hashOut, err := exec.Command("git", "--git-dir", gitDir, "rev-parse", "HEAD").Output(); err == nil {
+		commitHash = strings.TrimSpace(string(hashOut))
+	}
+
+	// Run post-deploy command
+	if p.PostDeployCmd != "" {
+		cmd := exec.Command("bash", "-c", p.PostDeployCmd)
+		cmd.Dir = p.DeployPath
+		out, err := cmd.CombinedOutput()
+		output := strings.TrimSpace(string(out))
+		allOutput += "Post-deploy: " + output + "\n"
+		if err != nil {
+			return map[string]any{
+				"output":      allOutput + "Post-deploy command failed: " + err.Error(),
+				"commit_hash": commitHash,
+			}, fmt.Errorf("post-deploy command failed: %s", output)
+		}
+	}
+
+	return map[string]any{
+		"output":      allOutput,
+		"commit_hash": commitHash,
+	}, nil
+}
+
+type gitLogParams struct {
+	Path  string `json:"path"`
+	Limit int    `json:"limit"`
+}
+
+func cmdGitLog(params json.RawMessage) (interface{}, error) {
+	var p gitLogParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if p.Path == "" {
+		return nil, fmt.Errorf("path is required")
+	}
+	if err := validatePath(p.Path); err != nil {
+		return nil, err
+	}
+	if p.Limit <= 0 {
+		p.Limit = 10
+	}
+
+	// Use a custom format for easy parsing
+	format := "%H|%an|%ae|%aI|%s"
+	out, err := exec.Command("git", "-C", p.Path, "log",
+		fmt.Sprintf("--max-count=%d", p.Limit),
+		"--format="+format,
+	).Output()
+	if err != nil {
+		return nil, fmt.Errorf("git log failed: %w", err)
+	}
+
+	var commits []map[string]string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 5)
+		if len(parts) < 5 {
+			continue
+		}
+		commits = append(commits, map[string]string{
+			"hash":    parts[0],
+			"author":  parts[1],
+			"email":   parts[2],
+			"date":    parts[3],
+			"message": parts[4],
+		})
+	}
+
+	return map[string]any{"commits": commits}, nil
+}
+
+type gitSetupHookParams struct {
+	RepoPath   string `json:"repo_path"`
+	WebhookURL string `json:"webhook_url"`
+}
+
+func cmdGitSetupHook(params json.RawMessage) (interface{}, error) {
+	var p gitSetupHookParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if p.RepoPath == "" || p.WebhookURL == "" {
+		return nil, fmt.Errorf("repo_path and webhook_url are required")
+	}
+	if err := validatePath(p.RepoPath); err != nil {
+		return nil, err
+	}
+
+	hookDir := filepath.Join(p.RepoPath, "hooks")
+	if err := os.MkdirAll(hookDir, 0755); err != nil {
+		return nil, fmt.Errorf("creating hooks directory: %w", err)
+	}
+
+	hookContent := fmt.Sprintf(`#!/bin/bash
+# PinkPanel auto-deploy hook
+curl -s -X POST "%s" > /dev/null 2>&1 &
+`, p.WebhookURL)
+
+	hookPath := filepath.Join(hookDir, "post-receive")
+	if err := os.WriteFile(hookPath, []byte(hookContent), 0755); err != nil {
+		return nil, fmt.Errorf("writing post-receive hook: %w", err)
+	}
+
+	return map[string]any{"status": "ok"}, nil
+}
 
 func escapeMySQLString(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
