@@ -140,6 +140,10 @@ func (r *CommandRegistry) registerBuiltins() {
 
 	// Mail autodiscovery
 	r.commands["email_write_autoconfig"] = cmdEmailWriteAutoconfig
+
+	// Mail SSL
+	r.commands["email_configure_ssl"] = cmdEmailConfigureSSL
+	r.commands["email_ssl_status"] = cmdEmailSSLStatus
 }
 
 // ---------- Param types ----------
@@ -2819,6 +2823,108 @@ func findPHPSocket() string {
 		return matches[0]
 	}
 	return "/run/php/php-fpm.sock"
+}
+
+// ---------- Mail SSL ----------
+
+func cmdEmailConfigureSSL(params json.RawMessage) (interface{}, error) {
+	var p struct {
+		Domain string `json:"domain"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if !safeNameRe.MatchString(p.Domain) {
+		return nil, fmt.Errorf("invalid domain: %s", p.Domain)
+	}
+
+	sslDir := fmt.Sprintf("/usr/local/pinkpanel/data/ssl/%s", p.Domain)
+	certPath := filepath.Join(sslDir, "cert.pem")
+	keyPath := filepath.Join(sslDir, "key.pem")
+	chainPath := filepath.Join(sslDir, "chain.pem")
+
+	// Check cert exists
+	if _, err := os.Stat(certPath); err != nil {
+		return nil, fmt.Errorf("SSL certificate not found for %s — issue an SSL certificate first", p.Domain)
+	}
+
+	// If chain exists, build fullchain (cert + chain)
+	fullchainPath := filepath.Join(sslDir, "fullchain.pem")
+	certData, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading cert: %w", err)
+	}
+	fullchain := string(certData)
+	if chainData, err := os.ReadFile(chainPath); err == nil {
+		fullchain += "\n" + string(chainData)
+	}
+	if err := os.WriteFile(fullchainPath, []byte(fullchain), 0644); err != nil {
+		return nil, fmt.Errorf("writing fullchain: %w", err)
+	}
+
+	// Configure Postfix TLS
+	postfixCmds := [][]string{
+		{"postconf", "-e", fmt.Sprintf("smtpd_tls_cert_file=%s", fullchainPath)},
+		{"postconf", "-e", fmt.Sprintf("smtpd_tls_key_file=%s", keyPath)},
+		{"postconf", "-e", "smtpd_tls_security_level=may"},
+		{"postconf", "-e", "smtp_tls_security_level=may"},
+	}
+	for _, args := range postfixCmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("postconf failed: %s: %w", strings.TrimSpace(string(out)), err)
+		}
+	}
+
+	// Configure Dovecot SSL
+	dovecotSSLConf := fmt.Sprintf(`ssl = required
+ssl_cert = <%s
+ssl_key = <%s
+ssl_min_protocol = TLSv1.2
+`, fullchainPath, keyPath)
+	if err := os.WriteFile("/etc/dovecot/conf.d/10-ssl.conf", []byte(dovecotSSLConf), 0644); err != nil {
+		return nil, fmt.Errorf("writing dovecot ssl config: %w", err)
+	}
+
+	// Reload services
+	exec.Command("systemctl", "reload", "postfix").Run()
+	exec.Command("systemctl", "reload", "dovecot").Run()
+
+	return map[string]string{
+		"status":    "ok",
+		"cert_path": fullchainPath,
+		"key_path":  keyPath,
+	}, nil
+}
+
+func cmdEmailSSLStatus(params json.RawMessage) (interface{}, error) {
+	var p struct {
+		Domain string `json:"domain"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if !safeNameRe.MatchString(p.Domain) {
+		return nil, fmt.Errorf("invalid domain: %s", p.Domain)
+	}
+
+	sslDir := fmt.Sprintf("/usr/local/pinkpanel/data/ssl/%s", p.Domain)
+	certPath := filepath.Join(sslDir, "cert.pem")
+	fullchainPath := filepath.Join(sslDir, "fullchain.pem")
+
+	hasCert := false
+	if _, err := os.Stat(certPath); err == nil {
+		hasCert = true
+	}
+	mailSSL := false
+	if _, err := os.Stat(fullchainPath); err == nil {
+		mailSSL = true
+	}
+
+	return map[string]any{
+		"has_ssl_cert": hasCert,
+		"mail_ssl":     mailSSL,
+	}, nil
 }
 
 // ---------- Helpers ----------

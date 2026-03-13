@@ -43,6 +43,8 @@ import {
   deleteSpamEntry,
   getAutodiscoveryStatus,
   setupAutodiscovery,
+  getMailSSLStatus,
+  configureMailSSL,
 } from "@/api/email";
 import type { EmailAccount, EmailForwarder, SpamListEntry } from "@/api/email";
 import type { AxiosError } from "axios";
@@ -68,6 +70,7 @@ import {
   ExternalLink,
   Shield,
   Wifi,
+  Lock,
 } from "lucide-react";
 
 export function DomainEmail() {
@@ -86,6 +89,7 @@ export function DomainEmail() {
       <ForwardersSection domainId={domainId} domainName={domain?.name ?? ""} />
       <SpamFilterSection domainId={domainId} />
       <AutodiscoverySection domainId={domainId} />
+      <MailSSLSection domainId={domainId} />
       <DNSRecordsSection domainId={domainId} />
     </div>
   );
@@ -836,6 +840,91 @@ function AutodiscoverySection({ domainId }: { domainId: number }) {
             >
               {data?.autodiscover ? <Check className="h-3 w-3 mr-1" /> : null}
               Outlook
+            </Badge>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Mail SSL ─────────────────────────────────────
+
+function MailSSLSection({ domainId }: { domainId: number }) {
+  const queryClient = useQueryClient();
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["mail-ssl", domainId],
+    queryFn: () => getMailSSLStatus(domainId),
+    enabled: !!domainId,
+    retry: false,
+  });
+
+  const configureMut = useMutation({
+    mutationFn: () => configureMailSSL(domainId),
+    onSuccess: () => {
+      toast.success("Mail SSL/TLS configured for Postfix and Dovecot");
+      queryClient.invalidateQueries({ queryKey: ["mail-ssl", domainId] });
+    },
+    onError: (err: AxiosError<APIError>) => {
+      toast.error(err.response?.data?.error?.message ?? "Failed to configure mail SSL");
+    },
+  });
+
+  if (isLoading) return <Skeleton className="h-24 w-full" />;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Lock className="h-4 w-4 text-pink-500" />
+              Mail SSL/TLS
+            </CardTitle>
+            <CardDescription>
+              {data?.mail_ssl
+                ? "SSL/TLS is configured for Postfix and Dovecot"
+                : data?.has_ssl_cert
+                  ? "SSL certificate available — click to enable for mail"
+                  : "Issue an SSL certificate first, then enable for mail"}
+            </CardDescription>
+          </div>
+          {data?.has_ssl_cert && !data?.mail_ssl && (
+            <Button
+              size="sm"
+              onClick={() => configureMut.mutate()}
+              disabled={configureMut.isPending}
+              className="bg-pink-500 hover:bg-pink-600"
+            >
+              {configureMut.isPending ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              ) : (
+                <Lock className="h-4 w-4 mr-1" />
+              )}
+              Enable SSL
+            </Button>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="p-3 rounded-lg border text-center">
+            <Badge
+              variant="outline"
+              className={data?.has_ssl_cert ? "text-green-500 border-green-500/30" : "text-yellow-500 border-yellow-500/30"}
+            >
+              {data?.has_ssl_cert ? <Check className="h-3 w-3 mr-1" /> : null}
+              SSL Certificate
+            </Badge>
+          </div>
+          <div className="p-3 rounded-lg border text-center">
+            <Badge
+              variant="outline"
+              className={data?.mail_ssl ? "text-green-500 border-green-500/30" : "text-yellow-500 border-yellow-500/30"}
+            >
+              {data?.mail_ssl ? <Check className="h-3 w-3 mr-1" /> : null}
+              Mail TLS
             </Badge>
           </div>
         </div>

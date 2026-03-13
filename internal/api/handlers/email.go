@@ -885,9 +885,73 @@ func (h *EmailHandler) Webmail(c *fiber.Ctx) error {
 	adminID, _ := c.Locals("admin_id").(int64)
 	db.LogActivity(h.DB, adminID, "webmail_login", "email", accountID, fullEmail, c.IP())
 
+	// Build absolute URL pointing to NGINX (port 443), not the panel port.
+	// Strip port from Host header to get just the hostname.
+	host := c.Hostname()
+	webmailURL := fmt.Sprintf("https://%s/roundcube/signon.php?token=%s", host, token)
+
 	return c.JSON(fiber.Map{
-		"url": fmt.Sprintf("/roundcube/signon.php?token=%s", token),
+		"url": webmailURL,
 	})
+}
+
+// ---------- Mail SSL ----------
+
+// ConfigureMailSSL sets up SSL/TLS for Postfix and Dovecot using the domain's certificate.
+func (h *EmailHandler) ConfigureMailSSL(c *fiber.Ctx) error {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid domain ID"}})
+	}
+
+	dom, err := h.DomainSvc.GetByID(domainID)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "domain not found"}})
+	}
+
+	resp, err := h.AgentClient.Call("email_configure_ssl", map[string]any{
+		"domain": dom.Name,
+	})
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "ssl_error", "message": err.Error()}})
+	}
+
+	adminID, _ := c.Locals("admin_id").(int64)
+	db.LogActivity(h.DB, adminID, "email_ssl_configure", "email", domainID, dom.Name, c.IP())
+
+	return c.JSON(resp.Result)
+}
+
+// GetMailSSLStatus checks if SSL is configured for mail services.
+func (h *EmailHandler) GetMailSSLStatus(c *fiber.Ctx) error {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid domain ID"}})
+	}
+
+	dom, err := h.DomainSvc.GetByID(domainID)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "domain not found"}})
+	}
+
+	resp, err := h.AgentClient.Call("email_ssl_status", map[string]any{
+		"domain": dom.Name,
+	})
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "agent_error", "message": err.Error()}})
+	}
+
+	// Parse agent response and add domain
+	var result map[string]any
+	if b, err := json.Marshal(resp.Result); err == nil {
+		json.Unmarshal(b, &result)
+	}
+	if result == nil {
+		result = map[string]any{}
+	}
+	result["domain"] = dom.Name
+
+	return c.JSON(result)
 }
 
 // ---------- Helpers ----------

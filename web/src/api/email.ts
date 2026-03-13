@@ -172,6 +172,23 @@ export async function setupAutodiscovery(domainId: number) {
   return res.data;
 }
 
+// Mail SSL
+export interface MailSSLStatus {
+  domain: string;
+  has_ssl_cert: boolean;
+  mail_ssl: boolean;
+}
+
+export async function getMailSSLStatus(domainId: number) {
+  const res = await api.get<MailSSLStatus>(`/domains/${domainId}/email/mail-ssl`);
+  return res.data;
+}
+
+export async function configureMailSSL(domainId: number) {
+  const res = await api.post<{ status: string }>(`/domains/${domainId}/email/mail-ssl`);
+  return res.data;
+}
+
 // Mail Queue
 export async function getMailQueue() {
   const res = await api.get<{ queue: MailQueueItem[] }>("/email/queue");
