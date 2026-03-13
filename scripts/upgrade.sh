@@ -851,6 +851,24 @@ setup_roundcube() {
         if ! grep -q "PinkPanel" "$rc_config"; then
             echo "\$config['product_name'] = 'PinkPanel Webmail';" >> "$rc_config"
         fi
+        # Disable TLS peer verification for localhost connections
+        if ! grep -q "smtp_conn_options" "$rc_config"; then
+            cat >> "$rc_config" <<'RCOPTS'
+
+$config['smtp_conn_options'] = [
+    'ssl' => [
+        'verify_peer' => false,
+        'verify_peer_name' => false,
+    ],
+];
+$config['imap_conn_options'] = [
+    'ssl' => [
+        'verify_peer' => false,
+        'verify_peer_name' => false,
+    ],
+];
+RCOPTS
+        fi
     fi
 
     # Deploy signon.php — reads one-time token, auto-submits login form
