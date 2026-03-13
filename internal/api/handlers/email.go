@@ -422,10 +422,14 @@ func (h *EmailHandler) ApplyDNSRecords(c *fiber.Ctx) error {
 	existingRecords, _ := h.DNSSvc.ListByDomain(domainID)
 
 	hasSPF, hasDKIM, hasDMARC := false, false, false
+	var existingSPFID int64
+	var existingSPFValue string
 	for _, r := range existingRecords {
 		if r.Type == "TXT" {
 			if r.Name == "@" && containsSubstr(r.Value, "v=spf1") {
 				hasSPF = true
+				existingSPFID = r.ID
+				existingSPFValue = r.Value
 			}
 			if r.Name == "mail._domainkey" {
 				hasDKIM = true
@@ -438,14 +442,21 @@ func (h *EmailHandler) ApplyDNSRecords(c *fiber.Ctx) error {
 
 	created := 0
 
+	// Build correct SPF value
+	spf := fmt.Sprintf("v=spf1 a mx ip4:%s", serverIP)
+	if serverIPv6 != "" {
+		spf += fmt.Sprintf(" ip6:%s", serverIPv6)
+	}
+	spf += " ~all"
+
 	if !hasSPF {
-		spf := fmt.Sprintf("v=spf1 a mx ip4:%s", serverIP)
-		if serverIPv6 != "" {
-			spf += fmt.Sprintf(" ip6:%s", serverIPv6)
-		}
-		spf += " ~all"
 		_, err := h.DNSSvc.Create(domainID, "TXT", "@", spf, 3600, nil)
 		if err == nil {
+			created++
+		}
+	} else if serverIPv6 != "" && !containsSubstr(existingSPFValue, "ip6:") {
+		// Update existing SPF to include IPv6
+		if _, err := h.DNSSvc.Update(existingSPFID, "TXT", "@", spf, 3600, nil); err == nil {
 			created++
 		}
 	}

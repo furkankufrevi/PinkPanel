@@ -2407,8 +2407,10 @@ func cmdEmailGenerateDKIM(params json.RawMessage) (interface{}, error) {
 	keyDir := fmt.Sprintf("/etc/opendkim/keys/%s", p.Domain)
 	pubKey := filepath.Join(keyDir, "mail.txt")
 
-	// If key already exists, just return the public key
+	// If key already exists, ensure tables are populated and return the public key
 	if _, err := os.Stat(pubKey); err == nil {
+		// Always ensure OpenDKIM tables are up-to-date (fixes empty tables)
+		updateOpenDKIMTables(p.Domain)
 		data, _ := os.ReadFile(pubKey)
 		return map[string]string{
 			"status":     "ok",
