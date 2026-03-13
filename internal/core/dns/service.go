@@ -183,9 +183,16 @@ func (s *Service) DeleteByName(domainID int64, name string) error {
 }
 
 // CreateDefaultRecords inserts the standard set of DNS records for a newly
-// created domain.
-func (s *Service) CreateDefaultRecords(domainID int64, domainName, serverIP string) error {
+// created domain. serverIPv6 is optional — pass "" to skip AAAA/ip6 records.
+func (s *Service) CreateDefaultRecords(domainID int64, domainName, serverIP, serverIPv6 string) error {
 	mx10 := 10
+
+	// Build SPF value with optional IPv6
+	spf := fmt.Sprintf("v=spf1 a mx ip4:%s", serverIP)
+	if serverIPv6 != "" {
+		spf += fmt.Sprintf(" ip6:%s", serverIPv6)
+	}
+	spf += " ~all"
 
 	defaults := []struct {
 		recType  string
@@ -209,9 +216,27 @@ func (s *Service) CreateDefaultRecords(domainID int64, domainName, serverIP stri
 		{"A", "mail", serverIP, 3600, nil},
 		{"MX", "@", fmt.Sprintf("mail.%s.", domainName), 3600, &mx10},
 		// SPF
-		{"TXT", "@", fmt.Sprintf("v=spf1 a mx ip4:%s ~all", serverIP), 3600, nil},
+		{"TXT", "@", spf, 3600, nil},
 		// DMARC
 		{"TXT", "_dmarc", fmt.Sprintf("v=DMARC1; p=quarantine; rua=mailto:postmaster@%s", domainName), 3600, nil},
+	}
+
+	// Add AAAA records if IPv6 is available
+	if serverIPv6 != "" {
+		ipv6Records := []struct {
+			recType  string
+			name     string
+			value    string
+			ttl      int
+			priority *int
+		}{
+			{"AAAA", "@", serverIPv6, 3600, nil},
+			{"AAAA", "www", serverIPv6, 3600, nil},
+			{"AAAA", "mail", serverIPv6, 3600, nil},
+			{"AAAA", "ns1", serverIPv6, 3600, nil},
+			{"AAAA", "ns2", serverIPv6, 3600, nil},
+		}
+		defaults = append(defaults, ipv6Records...)
 	}
 
 	for _, d := range defaults {

@@ -360,7 +360,8 @@ func (h *DNSHandler) ResetDefaults(c *fiber.Ctx) error {
 
 	// Create default records
 	serverIP := getServerIP()
-	if err := h.DNSSvc.CreateDefaultRecords(domainID, d.Name, serverIP); err != nil {
+	serverIPv6 := getServerIPv6()
+	if err := h.DNSSvc.CreateDefaultRecords(domainID, d.Name, serverIP, serverIPv6); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": fiber.Map{
 				"code":    "INTERNAL_ERROR",

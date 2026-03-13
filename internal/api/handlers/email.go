@@ -103,6 +103,9 @@ func (h *EmailHandler) CreateAccount(c *fiber.Ctx) error {
 	// Update Postfix virtual maps
 	h.syncVirtualMaps()
 
+	// Auto-setup DKIM + OpenDKIM tables for this domain if not already done
+	go h.ensureDKIM(domainID, dom.Name)
+
 	adminID, _ := c.Locals("admin_id").(int64)
 	db.LogActivity(h.DB, adminID, "create_email_account", "email", account.ID, req.Address+"@"+dom.Name, c.IP())
 
@@ -331,8 +334,16 @@ func (h *EmailHandler) GetDNSRecords(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "domain not found"}})
 	}
 
-	// Get server IP
+	// Get server IPs
 	serverIP := getServerIP()
+	serverIPv6 := getServerIPv6()
+
+	// Build recommended SPF value with optional IPv6
+	spfValue := fmt.Sprintf("v=spf1 a mx ip4:%s", serverIP)
+	if serverIPv6 != "" {
+		spfValue += fmt.Sprintf(" ip6:%s", serverIPv6)
+	}
+	spfValue += " ~all"
 
 	// Check existing DNS records
 	existingRecords, _ := h.DNSSvc.ListByDomain(domainID)
@@ -357,7 +368,7 @@ func (h *EmailHandler) GetDNSRecords(c *fiber.Ctx) error {
 		{
 			"type":   "TXT",
 			"name":   "@",
-			"value":  fmt.Sprintf("v=spf1 a mx ip4:%s ~all", serverIP),
+			"value":  spfValue,
 			"label":  "SPF",
 			"exists": hasSPF,
 		},
@@ -407,6 +418,7 @@ func (h *EmailHandler) ApplyDNSRecords(c *fiber.Ctx) error {
 	}
 
 	serverIP := getServerIP()
+	serverIPv6 := getServerIPv6()
 	existingRecords, _ := h.DNSSvc.ListByDomain(domainID)
 
 	hasSPF, hasDKIM, hasDMARC := false, false, false
@@ -427,7 +439,12 @@ func (h *EmailHandler) ApplyDNSRecords(c *fiber.Ctx) error {
 	created := 0
 
 	if !hasSPF {
-		_, err := h.DNSSvc.Create(domainID, "TXT", "@", fmt.Sprintf("v=spf1 a mx ip4:%s ~all", serverIP), 3600, nil)
+		spf := fmt.Sprintf("v=spf1 a mx ip4:%s", serverIP)
+		if serverIPv6 != "" {
+			spf += fmt.Sprintf(" ip6:%s", serverIPv6)
+		}
+		spf += " ~all"
+		_, err := h.DNSSvc.Create(domainID, "TXT", "@", spf, 3600, nil)
 		if err == nil {
 			created++
 		}
@@ -469,6 +486,55 @@ func (h *EmailHandler) ApplyDNSRecords(c *fiber.Ctx) error {
 	db.LogActivity(h.DB, adminID, "apply_email_dns", "email", domainID, fmt.Sprintf("%d records created", created), c.IP())
 
 	return c.JSON(fiber.Map{"status": "ok", "created": created})
+}
+
+// ensureDKIM generates DKIM keys and publishes the DNS record for a domain
+// if not already present. Safe to call multiple times — idempotent.
+func (h *EmailHandler) ensureDKIM(domainID int64, domainName string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error().Interface("panic", r).Str("domain", domainName).Msg("panic in ensureDKIM")
+		}
+	}()
+
+	// Check if DKIM record already exists
+	records, _ := h.DNSSvc.ListByDomain(domainID)
+	for _, r := range records {
+		if r.Type == "TXT" && containsSubstr(r.Name, "._domainkey") {
+			return // Already has DKIM
+		}
+	}
+
+	// Generate DKIM key + populate OpenDKIM tables
+	dkimResp, err := h.AgentClient.Call("email_generate_dkim", map[string]any{"domain": domainName})
+	if err != nil {
+		log.Error().Err(err).Str("domain", domainName).Msg("failed to generate DKIM key")
+		return
+	}
+
+	var dkimResult struct {
+		PublicKey string `json:"public_key"`
+		Selector  string `json:"selector"`
+	}
+	if raw, err := json.Marshal(dkimResp.Result); err == nil {
+		json.Unmarshal(raw, &dkimResult)
+	}
+
+	if dkimResult.PublicKey == "" {
+		log.Error().Str("domain", domainName).Msg("DKIM generation returned empty public key")
+		return
+	}
+
+	// Create DNS record
+	_, err = h.DNSSvc.Create(domainID, "TXT", dkimResult.Selector+"._domainkey", dkimResult.PublicKey, 3600, nil)
+	if err != nil {
+		log.Error().Err(err).Str("domain", domainName).Msg("failed to create DKIM DNS record")
+		return
+	}
+
+	// Regenerate zone
+	h.regenerateZone(domainID, domainName)
+	log.Info().Str("domain", domainName).Msg("DKIM key generated and DNS record published")
 }
 
 // ---------- Mail Queue ----------

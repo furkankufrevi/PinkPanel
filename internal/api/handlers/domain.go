@@ -243,6 +243,7 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 
 	// DNS handling
 	serverIP := getServerIP()
+	serverIPv6 := getServerIPv6()
 	if parentDomain != nil {
 		// Subdomain: add A record to parent zone (separate_dns defaults to false)
 		subPrefix := extractSubPrefix(d.Name, parentDomain.Name)
@@ -251,12 +252,16 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 		} else {
 			provisionDNSZone(h.DNSSvc, h.AgentClient, parentDomain.ID, parentDomain.Name)
 		}
+		// Add AAAA record for subdomain if IPv6 available
+		if serverIPv6 != "" {
+			h.DNSSvc.Create(parentDomain.ID, "AAAA", subPrefix, serverIPv6, 3600, nil)
+		}
 		// Clean up any stale separate zone for this subdomain (from previous creation/toggle)
 		h.AgentClient.Call("dns_remove_zone", map[string]interface{}{"domain": d.Name})
 		h.AgentClient.Call("dns_reload", nil)
 	} else {
 		// Root domain: create full DNS zone
-		if err := h.DNSSvc.CreateDefaultRecords(d.ID, d.Name, serverIP); err != nil {
+		if err := h.DNSSvc.CreateDefaultRecords(d.ID, d.Name, serverIP, serverIPv6); err != nil {
 			log.Printf("WARNING: failed to create default DNS records for %s: %v", d.Name, err)
 		} else {
 			provisionDNSZone(h.DNSSvc, h.AgentClient, d.ID, d.Name)
@@ -449,13 +454,14 @@ func (h *DomainHandler) toggleSeparateDNS(d *domain.Domain, separateDNS bool) {
 	}
 	subPrefix := extractSubPrefix(d.Name, parent.Name)
 	serverIP := getServerIP()
+	serverIPv6 := getServerIPv6()
 
 	if separateDNS {
 		// Turning ON: remove A from parent zone, create own zone
 		_ = h.DNSSvc.DeleteByName(parent.ID, subPrefix)
 		provisionDNSZone(h.DNSSvc, h.AgentClient, parent.ID, parent.Name)
 
-		if err := h.DNSSvc.CreateDefaultRecords(d.ID, d.Name, serverIP); err != nil {
+		if err := h.DNSSvc.CreateDefaultRecords(d.ID, d.Name, serverIP, serverIPv6); err != nil {
 			log.Printf("WARNING: failed to create DNS zone for subdomain %s: %v", d.Name, err)
 		} else {
 			provisionDNSZone(h.DNSSvc, h.AgentClient, d.ID, d.Name)
@@ -842,6 +848,36 @@ func getServerIP() string {
 	}
 	log.Printf("WARNING: no non-loopback IPv4 found, using 127.0.0.1 for DNS records")
 	return "127.0.0.1"
+}
+
+// getServerIPv6 returns the server's primary public IPv6 address.
+// Returns empty string if no public IPv6 is available.
+func getServerIPv6() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok || ipNet.IP.IsLoopback() {
+			continue
+		}
+		// Skip IPv4
+		if ipNet.IP.To4() != nil {
+			continue
+		}
+		ip := ipNet.IP.String()
+		// Skip link-local (fe80::)
+		if ipNet.IP.IsLinkLocalUnicast() || ipNet.IP.IsLinkLocalMulticast() {
+			continue
+		}
+		// Prefer non-private (global unicast)
+		if !ipNet.IP.IsPrivate() {
+			return ip
+		}
+	}
+	return ""
 }
 
 // checkSystemHealth verifies that critical services are working after domain
