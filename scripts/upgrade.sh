@@ -845,8 +845,8 @@ setup_roundcube() {
         if ! grep -q "imap_host.*localhost" "$rc_config"; then
             sed -i "s|\\\$config\['imap_host'\].*|\\\$config['imap_host'] = ['localhost:143'];|" "$rc_config"
         fi
-        if ! grep -q "smtp_host.*localhost" "$rc_config"; then
-            sed -i "s|\\\$config\['smtp_host'\].*|\\\$config['smtp_host'] = 'localhost:587';|" "$rc_config"
+        if ! grep -q "smtp_host.*tls://localhost" "$rc_config"; then
+            sed -i "s|\\\$config\['smtp_host'\].*|\\\$config['smtp_host'] = 'tls://localhost:587';|" "$rc_config"
         fi
         if ! grep -q "PinkPanel" "$rc_config"; then
             echo "\$config['product_name'] = 'PinkPanel Webmail';" >> "$rc_config"

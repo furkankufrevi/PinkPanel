@@ -953,7 +953,7 @@ setup_roundcube() {
         fi
         # Set SMTP host
         if ! grep -q "smtp_host.*localhost" "$rc_config"; then
-            sed -i "s|\\\$config\['smtp_host'\].*|\\\$config['smtp_host'] = 'localhost:587';|" "$rc_config"
+            sed -i "s|\\\$config\['smtp_host'\].*|\\\$config['smtp_host'] = 'tls://localhost:587';|" "$rc_config"
         fi
         # Set product name
         if ! grep -q "PinkPanel" "$rc_config"; then
