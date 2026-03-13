@@ -94,6 +94,84 @@ export async function applyEmailDNSRecords(domainId: number) {
   return res.data;
 }
 
+// SpamAssassin
+export interface SpamSettings {
+  id: number;
+  domain_id: number;
+  enabled: boolean;
+  score_threshold: number;
+  action: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SpamListEntry {
+  id: number;
+  domain_id: number;
+  list_type: string;
+  entry: string;
+  created_at: string;
+}
+
+export async function getSpamSettings(domainId: number) {
+  const res = await api.get<SpamSettings>(`/domains/${domainId}/email/spam`);
+  return res.data;
+}
+
+export async function updateSpamSettings(domainId: number, settings: { enabled: boolean; score_threshold: number; action: string }) {
+  await api.put(`/domains/${domainId}/email/spam`, settings);
+}
+
+export async function getSpamList(domainId: number, type: 'whitelist' | 'blacklist') {
+  const res = await api.get<{ data: SpamListEntry[] }>(`/domains/${domainId}/email/spam/list/${type}`);
+  return res.data;
+}
+
+export async function addSpamEntry(domainId: number, req: { list_type: string; entry: string }) {
+  const res = await api.post<SpamListEntry>(`/domains/${domainId}/email/spam/list`, req);
+  return res.data;
+}
+
+export async function deleteSpamEntry(domainId: number, entryId: number) {
+  await api.delete(`/domains/${domainId}/email/spam/list/${entryId}`);
+}
+
+// ClamAV
+export interface ClamAVStatus {
+  enabled: boolean;
+  clamav_running: boolean;
+  freshclam_running: boolean;
+  milter_running: boolean;
+  version?: string;
+}
+
+export async function getClamAVStatus() {
+  const res = await api.get<ClamAVStatus>("/email/clamav");
+  return res.data;
+}
+
+export async function toggleClamAV(enabled: boolean) {
+  await api.put("/email/clamav", { enabled });
+}
+
+// Autodiscovery
+export interface AutodiscoveryStatus {
+  configured: boolean;
+  srv_records: boolean;
+  autoconfig: boolean;
+  autodiscover: boolean;
+}
+
+export async function getAutodiscoveryStatus(domainId: number) {
+  const res = await api.get<AutodiscoveryStatus>(`/domains/${domainId}/email/autodiscovery`);
+  return res.data;
+}
+
+export async function setupAutodiscovery(domainId: number) {
+  const res = await api.post<{ status: string; created: number }>(`/domains/${domainId}/email/autodiscovery`);
+  return res.data;
+}
+
 // Mail Queue
 export async function getMailQueue() {
   const res = await api.get<{ queue: MailQueueItem[] }>("/email/queue");

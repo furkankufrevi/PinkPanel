@@ -507,6 +507,321 @@ func (h *EmailHandler) DeleteQueueItem(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"status": "ok"})
 }
 
+// ---------- SpamAssassin ----------
+
+// GetSpamSettings returns spam filter settings for a domain.
+func (h *EmailHandler) GetSpamSettings(c *fiber.Ctx) error {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid domain ID"}})
+	}
+
+	settings, err := h.EmailSvc.GetSpamSettings(domainID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "internal_error", "message": err.Error()}})
+	}
+
+	return c.JSON(settings)
+}
+
+// UpdateSpamSettings updates spam filter settings for a domain.
+func (h *EmailHandler) UpdateSpamSettings(c *fiber.Ctx) error {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid domain ID"}})
+	}
+
+	var req struct {
+		Enabled        bool    `json:"enabled"`
+		ScoreThreshold float64 `json:"score_threshold"`
+		Action         string  `json:"action"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid request body"}})
+	}
+
+	if err := h.EmailSvc.UpdateSpamSettings(domainID, req.Enabled, req.ScoreThreshold, req.Action); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "validation_error", "message": err.Error()}})
+	}
+
+	// Get domain name and lists for agent config
+	dom, _ := h.DomainSvc.GetByID(domainID)
+	if dom != nil {
+		whitelist, _ := h.EmailSvc.ListSpamEntries(domainID, "whitelist")
+		blacklist, _ := h.EmailSvc.ListSpamEntries(domainID, "blacklist")
+
+		var wl, bl []string
+		for _, e := range whitelist {
+			wl = append(wl, e.Entry)
+		}
+		for _, e := range blacklist {
+			bl = append(bl, e.Entry)
+		}
+
+		h.AgentClient.Call("spam_configure", map[string]any{
+			"domain":          dom.Name,
+			"enabled":         req.Enabled,
+			"score_threshold": req.ScoreThreshold,
+			"action":          req.Action,
+			"whitelist":       wl,
+			"blacklist":       bl,
+		})
+	}
+
+	adminID, _ := c.Locals("admin_id").(int64)
+	db.LogActivity(h.DB, adminID, "update_spam_settings", "email", domainID, req.Action, c.IP())
+
+	return c.JSON(fiber.Map{"status": "ok"})
+}
+
+// ListSpamEntries returns whitelist or blacklist entries.
+func (h *EmailHandler) ListSpamEntries(c *fiber.Ctx) error {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid domain ID"}})
+	}
+
+	listType := c.Params("type")
+	if listType != "whitelist" && listType != "blacklist" {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "type must be whitelist or blacklist"}})
+	}
+
+	entries, err := h.EmailSvc.ListSpamEntries(domainID, listType)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "internal_error", "message": err.Error()}})
+	}
+	if entries == nil {
+		entries = []email.SpamListEntry{}
+	}
+	return c.JSON(fiber.Map{"data": entries})
+}
+
+// AddSpamEntry adds a whitelist or blacklist entry.
+func (h *EmailHandler) AddSpamEntry(c *fiber.Ctx) error {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid domain ID"}})
+	}
+
+	var req struct {
+		ListType string `json:"list_type"`
+		Entry    string `json:"entry"`
+	}
+	if err := c.BodyParser(&req); err != nil || req.Entry == "" {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "validation_error", "message": "list_type and entry are required"}})
+	}
+
+	entry, err := h.EmailSvc.AddSpamEntry(domainID, req.ListType, req.Entry)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "validation_error", "message": err.Error()}})
+	}
+
+	// Reconfigure SpamAssassin with updated lists
+	h.reconfigureSpam(domainID)
+
+	return c.Status(201).JSON(entry)
+}
+
+// DeleteSpamEntry removes a whitelist or blacklist entry.
+func (h *EmailHandler) DeleteSpamEntry(c *fiber.Ctx) error {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid domain ID"}})
+	}
+
+	entryID, err := strconv.ParseInt(c.Params("entryId"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid entry ID"}})
+	}
+
+	if err := h.EmailSvc.DeleteSpamEntry(entryID); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "internal_error", "message": err.Error()}})
+	}
+
+	h.reconfigureSpam(domainID)
+
+	return c.JSON(fiber.Map{"status": "ok"})
+}
+
+// reconfigureSpam pushes current spam settings + lists to the agent.
+func (h *EmailHandler) reconfigureSpam(domainID int64) {
+	dom, _ := h.DomainSvc.GetByID(domainID)
+	settings, _ := h.EmailSvc.GetSpamSettings(domainID)
+	if dom == nil || settings == nil {
+		return
+	}
+
+	whitelist, _ := h.EmailSvc.ListSpamEntries(domainID, "whitelist")
+	blacklist, _ := h.EmailSvc.ListSpamEntries(domainID, "blacklist")
+
+	var wl, bl []string
+	for _, e := range whitelist {
+		wl = append(wl, e.Entry)
+	}
+	for _, e := range blacklist {
+		bl = append(bl, e.Entry)
+	}
+
+	h.AgentClient.Call("spam_configure", map[string]any{
+		"domain":          dom.Name,
+		"enabled":         settings.Enabled,
+		"score_threshold": settings.ScoreThreshold,
+		"action":          settings.Action,
+		"whitelist":       wl,
+		"blacklist":       bl,
+	})
+}
+
+// ---------- ClamAV ----------
+
+// GetClamAVStatus returns ClamAV service status.
+func (h *EmailHandler) GetClamAVStatus(c *fiber.Ctx) error {
+	resp, err := h.AgentClient.Call("clamav_status", nil)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "agent_error", "message": err.Error()}})
+	}
+	return c.JSON(resp.Result)
+}
+
+// ToggleClamAV enables or disables ClamAV scanning.
+func (h *EmailHandler) ToggleClamAV(c *fiber.Ctx) error {
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid request body"}})
+	}
+
+	_, err := h.AgentClient.Call("clamav_configure", map[string]any{"enabled": req.Enabled})
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "agent_error", "message": err.Error()}})
+	}
+
+	adminID, _ := c.Locals("admin_id").(int64)
+	action := "disabled"
+	if req.Enabled {
+		action = "enabled"
+	}
+	db.LogActivity(h.DB, adminID, "toggle_clamav", "email", 0, "ClamAV "+action, c.IP())
+
+	return c.JSON(fiber.Map{"status": "ok"})
+}
+
+// ---------- Mail Autodiscovery ----------
+
+// GetAutodiscoveryStatus returns autodiscovery configuration status.
+func (h *EmailHandler) GetAutodiscoveryStatus(c *fiber.Ctx) error {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid domain ID"}})
+	}
+
+	records, _ := h.DNSSvc.ListByDomain(domainID)
+
+	hasSRV := false
+	hasAutoconfig := false
+	hasAutodiscover := false
+
+	for _, r := range records {
+		switch {
+		case r.Type == "SRV" && (r.Name == "_imaps._tcp" || r.Name == "_submission._tcp"):
+			hasSRV = true
+		case r.Type == "CNAME" && r.Name == "autoconfig":
+			hasAutoconfig = true
+		case r.Type == "CNAME" && r.Name == "autodiscover":
+			hasAutodiscover = true
+		}
+	}
+
+	return c.JSON(fiber.Map{
+		"configured":   hasSRV && hasAutoconfig && hasAutodiscover,
+		"srv_records":  hasSRV,
+		"autoconfig":   hasAutoconfig,
+		"autodiscover": hasAutodiscover,
+	})
+}
+
+// SetupAutodiscovery creates DNS records and XML files for mail autodiscovery.
+func (h *EmailHandler) SetupAutodiscovery(c *fiber.Ctx) error {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid domain ID"}})
+	}
+
+	dom, err := h.DomainSvc.GetByID(domainID)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "domain not found"}})
+	}
+
+	records, _ := h.DNSSvc.ListByDomain(domainID)
+	created := 0
+
+	// Check existing records
+	hasSRVIMAP, hasSRVSMTP, hasAutoconfig, hasAutodiscover := false, false, false, false
+	for _, r := range records {
+		switch {
+		case r.Type == "SRV" && r.Name == "_imaps._tcp":
+			hasSRVIMAP = true
+		case r.Type == "SRV" && r.Name == "_submission._tcp":
+			hasSRVSMTP = true
+		case r.Type == "CNAME" && r.Name == "autoconfig":
+			hasAutoconfig = true
+		case r.Type == "CNAME" && r.Name == "autodiscover":
+			hasAutodiscover = true
+		}
+	}
+
+	// Create SRV records for IMAPS
+	if !hasSRVIMAP {
+		priority := 0
+		_, err := h.DNSSvc.Create(domainID, "SRV", "_imaps._tcp", fmt.Sprintf("0 1 993 mail.%s.", dom.Name), 3600, &priority)
+		if err == nil {
+			created++
+		}
+	}
+
+	// Create SRV records for submission
+	if !hasSRVSMTP {
+		priority := 0
+		_, err := h.DNSSvc.Create(domainID, "SRV", "_submission._tcp", fmt.Sprintf("0 1 587 mail.%s.", dom.Name), 3600, &priority)
+		if err == nil {
+			created++
+		}
+	}
+
+	// Create CNAME for autoconfig
+	if !hasAutoconfig {
+		_, err := h.DNSSvc.Create(domainID, "CNAME", "autoconfig", fmt.Sprintf("mail.%s.", dom.Name), 3600, nil)
+		if err == nil {
+			created++
+		}
+	}
+
+	// Create CNAME for autodiscover
+	if !hasAutodiscover {
+		_, err := h.DNSSvc.Create(domainID, "CNAME", "autodiscover", fmt.Sprintf("mail.%s.", dom.Name), 3600, nil)
+		if err == nil {
+			created++
+		}
+	}
+
+	// Write autoconfig/autodiscover XML files via agent
+	h.AgentClient.Call("email_write_autoconfig", map[string]any{
+		"domain":   dom.Name,
+		"hostname": "mail." + dom.Name,
+	})
+
+	// Regenerate DNS zone
+	if created > 0 {
+		h.regenerateZone(domainID, dom.Name)
+	}
+
+	adminID, _ := c.Locals("admin_id").(int64)
+	db.LogActivity(h.DB, adminID, "setup_autodiscovery", "email", domainID, fmt.Sprintf("%d DNS records created", created), c.IP())
+
+	return c.JSON(fiber.Map{"status": "ok", "created": created})
+}
+
 // ---------- Webmail ----------
 
 // Webmail generates a one-time Roundcube signon token for auto-login.

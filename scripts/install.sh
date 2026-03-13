@@ -829,6 +829,100 @@ TRUSTED
     log "Mail server configured (Postfix + Dovecot + OpenDKIM)"
 }
 
+# SpamAssassin & ClamAV
+# ---------------------------------------------------------------------------
+
+setup_spam_antivirus() {
+    log "Configuring spam & antivirus filtering..."
+
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get install -y -qq spamassassin spamass-milter \
+        clamav clamav-daemon clamav-milter \
+        dovecot-sieve dovecot-managesieved > /dev/null 2>&1 || {
+        warn "Some spam/antivirus packages not available — skipping"
+        return
+    }
+
+    # Enable SpamAssassin daemon
+    sed -i 's/ENABLED=0/ENABLED=1/' /etc/default/spamassassin 2>/dev/null || true
+    mkdir -p /etc/spamassassin/local.d
+
+    # Configure spamass-milter socket inside Postfix chroot
+    mkdir -p /var/spool/postfix/spamass
+    chown postfix:postfix /var/spool/postfix/spamass
+
+    if [[ ! -f /etc/default/spamass-milter ]] || ! grep -q "spamass.sock" /etc/default/spamass-milter 2>/dev/null; then
+        cat > /etc/default/spamass-milter <<'SPAMILTER'
+OPTIONS="-u spamass-milter -p /var/spool/postfix/spamass/spamass.sock"
+SPAMILTER
+    fi
+
+    # ClamAV milter config
+    mkdir -p /var/spool/postfix/clamav
+    chown clamav:postfix /var/spool/postfix/clamav
+
+    cat > /etc/clamav/clamav-milter.conf <<'CMILTER'
+MilterSocket /var/spool/postfix/clamav/clamav-milter.sock
+MilterSocketMode 660
+MilterSocketGroup postfix
+FixStaleSocket true
+User clamav
+ClamdSocket unix:/run/clamav/clamd.ctl
+OnInfected Reject
+LogInfected Basic
+LogClean Off
+CMILTER
+
+    # Add milters to Postfix (SpamAssassin + ClamAV alongside OpenDKIM)
+    if ! grep -q "spamass" /etc/postfix/main.cf 2>/dev/null; then
+        postconf -e "smtpd_milters = inet:localhost:8891, unix:/var/spool/postfix/spamass/spamass.sock, unix:/var/spool/postfix/clamav/clamav-milter.sock"
+        postconf -e "non_smtpd_milters = inet:localhost:8891"
+        postconf -e "milter_default_action = accept"
+    fi
+
+    # Dovecot sieve: move spam to Junk folder
+    mkdir -p /var/lib/dovecot/sieve
+    cat > /var/lib/dovecot/sieve/spam-to-junk.sieve <<'SIEVE'
+require ["fileinto", "mailbox"];
+if header :contains "X-Spam-Flag" "YES" {
+    fileinto :create "Junk";
+    stop;
+}
+SIEVE
+    sievec /var/lib/dovecot/sieve/spam-to-junk.sieve 2>/dev/null || true
+    chown -R vmail:vmail /var/lib/dovecot/sieve
+
+    # Enable sieve plugin in Dovecot
+    if [[ ! -f /etc/dovecot/conf.d/90-sieve.conf ]] || ! grep -q "sieve" /etc/dovecot/conf.d/90-sieve.conf 2>/dev/null; then
+        cat > /etc/dovecot/conf.d/90-sieve.conf <<'DSIEVE'
+plugin {
+    sieve = /var/lib/dovecot/sieve/spam-to-junk.sieve
+    sieve_global_dir = /var/lib/dovecot/sieve/
+}
+
+protocol lmtp {
+    mail_plugins = $mail_plugins sieve
+}
+DSIEVE
+    fi
+
+    # Autoconfig directories
+    mkdir -p /var/www/autoconfig /var/www/autodiscover
+    chown -R www-data:www-data /var/www/autoconfig /var/www/autodiscover
+
+    # Enable and start services
+    systemctl enable --now clamav-freshclam > /dev/null 2>&1 || true
+    systemctl enable --now clamav-daemon > /dev/null 2>&1 || true
+    systemctl enable --now spamassassin > /dev/null 2>&1 || true
+    systemctl enable --now spamass-milter > /dev/null 2>&1 || true
+    systemctl enable --now clamav-milter > /dev/null 2>&1 || true
+    systemctl reload dovecot > /dev/null 2>&1 || true
+    postfix reload > /dev/null 2>&1 || true
+
+    log "Spam & antivirus filtering ready (SpamAssassin + ClamAV)"
+}
+
+# ---------------------------------------------------------------------------
 # Roundcube Webmail
 # ---------------------------------------------------------------------------
 
@@ -1053,6 +1147,7 @@ main() {
     setup_phpmyadmin
     setup_mail
     setup_roundcube
+    setup_spam_antivirus
     setup_firewall
     setup_modsecurity
     setup_fail2ban

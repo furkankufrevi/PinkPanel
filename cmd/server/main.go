@@ -418,9 +418,18 @@ func main() {
 	domainEmail.Get("/dns-records", emailHandler.GetDNSRecords)
 	domainEmail.Post("/dns-records", emailHandler.ApplyDNSRecords)
 	domainEmail.Post("/accounts/:accountId/webmail", emailHandler.Webmail)
+	domainEmail.Get("/spam", emailHandler.GetSpamSettings)
+	domainEmail.Put("/spam", emailHandler.UpdateSpamSettings)
+	domainEmail.Get("/spam/list/:type", emailHandler.ListSpamEntries)
+	domainEmail.Post("/spam/list", emailHandler.AddSpamEntry)
+	domainEmail.Delete("/spam/list/:entryId", emailHandler.DeleteSpamEntry)
+	domainEmail.Get("/autodiscovery", emailHandler.GetAutodiscoveryStatus)
+	domainEmail.Post("/autodiscovery", emailHandler.SetupAutodiscovery)
 	adminOnly.Get("/email/queue", emailHandler.ListQueue)
 	adminOnly.Post("/email/queue/flush", emailHandler.FlushQueue)
 	adminOnly.Delete("/email/queue/:queueId", emailHandler.DeleteQueueItem)
+	adminOnly.Get("/email/clamav", emailHandler.GetClamAVStatus)
+	adminOnly.Put("/email/clamav", emailHandler.ToggleClamAV)
 
 	// File manager routes
 	protected.Get("/domains/:id/files", fileHandler.List)

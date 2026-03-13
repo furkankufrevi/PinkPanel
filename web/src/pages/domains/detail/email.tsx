@@ -36,11 +36,25 @@ import {
   deleteEmailForwarder,
   getEmailDNSRecords,
   applyEmailDNSRecords,
+  getSpamSettings,
+  updateSpamSettings,
+  getSpamList,
+  addSpamEntry,
+  deleteSpamEntry,
+  getAutodiscoveryStatus,
+  setupAutodiscovery,
 } from "@/api/email";
-import type { EmailAccount, EmailForwarder } from "@/api/email";
+import type { EmailAccount, EmailForwarder, SpamListEntry } from "@/api/email";
 import type { AxiosError } from "axios";
 import type { APIError } from "@/types/api";
 import { getDomain } from "@/api/domains";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Mail,
   Plus,
@@ -52,6 +66,8 @@ import {
   Check,
   Loader2,
   ExternalLink,
+  Shield,
+  Wifi,
 } from "lucide-react";
 
 export function DomainEmail() {
@@ -68,6 +84,8 @@ export function DomainEmail() {
     <div className="space-y-6 max-w-3xl">
       <AccountsSection domainId={domainId} domainName={domain?.name ?? ""} />
       <ForwardersSection domainId={domainId} domainName={domain?.name ?? ""} />
+      <SpamFilterSection domainId={domainId} />
+      <AutodiscoverySection domainId={domainId} />
       <DNSRecordsSection domainId={domainId} />
     </div>
   );
@@ -529,6 +547,300 @@ function ForwardersSection({ domainId, domainName }: { domainId: number; domainN
         onConfirm={() => deleteMut.mutate()}
       />
     </>
+  );
+}
+
+// ─── Spam Filter ─────────────────────────────────
+
+function SpamFilterSection({ domainId }: { domainId: number }) {
+  const queryClient = useQueryClient();
+  const [newEntry, setNewEntry] = useState("");
+  const [newListType, setNewListType] = useState<"whitelist" | "blacklist">("whitelist");
+
+  const { data: settings, isLoading } = useQuery({
+    queryKey: ["spam-settings", domainId],
+    queryFn: () => getSpamSettings(domainId),
+    enabled: !!domainId,
+  });
+
+  const { data: whitelistData } = useQuery({
+    queryKey: ["spam-list", domainId, "whitelist"],
+    queryFn: () => getSpamList(domainId, "whitelist"),
+    enabled: !!domainId,
+  });
+
+  const { data: blacklistData } = useQuery({
+    queryKey: ["spam-list", domainId, "blacklist"],
+    queryFn: () => getSpamList(domainId, "blacklist"),
+    enabled: !!domainId,
+  });
+
+  const updateMut = useMutation({
+    mutationFn: (s: { enabled: boolean; score_threshold: number; action: string }) =>
+      updateSpamSettings(domainId, s),
+    onSuccess: () => {
+      toast.success("Spam settings updated");
+      queryClient.invalidateQueries({ queryKey: ["spam-settings", domainId] });
+    },
+    onError: (err: AxiosError<APIError>) => {
+      toast.error(err.response?.data?.error?.message ?? "Failed to update spam settings");
+    },
+  });
+
+  const addMut = useMutation({
+    mutationFn: () => addSpamEntry(domainId, { list_type: newListType, entry: newEntry }),
+    onSuccess: () => {
+      toast.success("Entry added");
+      setNewEntry("");
+      queryClient.invalidateQueries({ queryKey: ["spam-list", domainId, newListType] });
+    },
+    onError: (err: AxiosError<APIError>) => {
+      toast.error(err.response?.data?.error?.message ?? "Failed to add entry");
+    },
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: (entry: SpamListEntry) => deleteSpamEntry(domainId, entry.id),
+    onSuccess: (_: void, entry: SpamListEntry) => {
+      queryClient.invalidateQueries({ queryKey: ["spam-list", domainId, entry.list_type] });
+    },
+  });
+
+  if (isLoading) return <Skeleton className="h-32 w-full" />;
+
+  const whitelist = whitelistData?.data ?? [];
+  const blacklist = blacklistData?.data ?? [];
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm flex items-center gap-2">
+          <Shield className="h-4 w-4 text-pink-500" />
+          Spam Filter (SpamAssassin)
+        </CardTitle>
+        <CardDescription>
+          Configure spam filtering for this domain
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-center justify-between">
+          <Label>Enable Spam Filtering</Label>
+          <Switch
+            checked={settings?.enabled ?? false}
+            onCheckedChange={(checked) =>
+              updateMut.mutate({
+                enabled: !!checked,
+                score_threshold: settings?.score_threshold ?? 5.0,
+                action: settings?.action ?? "mark",
+              })
+            }
+          />
+        </div>
+
+        {settings?.enabled && (
+          <>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Score Threshold</Label>
+                <Input
+                  type="number"
+                  step="0.5"
+                  min="1"
+                  max="20"
+                  value={settings.score_threshold}
+                  onChange={(e) =>
+                    updateMut.mutate({
+                      enabled: true,
+                      score_threshold: parseFloat(e.target.value) || 5.0,
+                      action: settings.action,
+                    })
+                  }
+                />
+                <p className="text-xs text-muted-foreground">Lower = stricter (default: 5.0)</p>
+              </div>
+              <div className="space-y-2">
+                <Label>Action on Spam</Label>
+                <Select
+                  value={settings.action}
+                  onValueChange={(v) =>
+                    v && updateMut.mutate({
+                      enabled: true,
+                      score_threshold: settings.score_threshold,
+                      action: v,
+                    })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="mark">Mark as spam (headers)</SelectItem>
+                    <SelectItem value="junk">Move to Junk folder</SelectItem>
+                    <SelectItem value="delete">Delete</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="border-t pt-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <Select
+                  value={newListType}
+                  onValueChange={(v) => v && setNewListType(v as "whitelist" | "blacklist")}
+                >
+                  <SelectTrigger className="w-32">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="whitelist">Whitelist</SelectItem>
+                    <SelectItem value="blacklist">Blacklist</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Input
+                  value={newEntry}
+                  onChange={(e) => setNewEntry(e.target.value)}
+                  placeholder="user@example.com or *@example.com"
+                  className="flex-1"
+                />
+                <Button
+                  size="sm"
+                  onClick={() => addMut.mutate()}
+                  disabled={!newEntry || addMut.isPending}
+                >
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
+
+              {whitelist.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-1">Whitelist</p>
+                  <div className="space-y-1">
+                    {whitelist.map((e) => (
+                      <div key={e.id} className="flex items-center justify-between px-2 py-1 rounded border text-sm">
+                        <span className="text-green-500">{e.entry}</span>
+                        <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => deleteMut.mutate(e)}>
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {blacklist.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-1">Blacklist</p>
+                  <div className="space-y-1">
+                    {blacklist.map((e) => (
+                      <div key={e.id} className="flex items-center justify-between px-2 py-1 rounded border text-sm">
+                        <span className="text-red-500">{e.entry}</span>
+                        <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => deleteMut.mutate(e)}>
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Autodiscovery ───────────────────────────────
+
+function AutodiscoverySection({ domainId }: { domainId: number }) {
+  const queryClient = useQueryClient();
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["autodiscovery", domainId],
+    queryFn: () => getAutodiscoveryStatus(domainId),
+    enabled: !!domainId,
+    retry: false,
+  });
+
+  const setupMut = useMutation({
+    mutationFn: () => setupAutodiscovery(domainId),
+    onSuccess: (res) => {
+      toast.success(`Autodiscovery configured (${res.created} DNS records created)`);
+      queryClient.invalidateQueries({ queryKey: ["autodiscovery", domainId] });
+    },
+    onError: (err: AxiosError<APIError>) => {
+      toast.error(err.response?.data?.error?.message ?? "Failed to setup autodiscovery");
+    },
+  });
+
+  if (isLoading) return <Skeleton className="h-24 w-full" />;
+
+  const allConfigured = data?.configured ?? false;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Wifi className="h-4 w-4 text-pink-500" />
+              Mail Autodiscovery
+            </CardTitle>
+            <CardDescription>
+              {allConfigured
+                ? "Thunderbird & Outlook will auto-detect mail settings"
+                : "Auto-configure email clients (Thunderbird, Outlook)"}
+            </CardDescription>
+          </div>
+          {!allConfigured && (
+            <Button
+              size="sm"
+              onClick={() => setupMut.mutate()}
+              disabled={setupMut.isPending}
+              className="bg-pink-500 hover:bg-pink-600"
+            >
+              {setupMut.isPending ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              ) : (
+                <Plus className="h-4 w-4 mr-1" />
+              )}
+              Setup
+            </Button>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-3 gap-3">
+          <div className="p-3 rounded-lg border text-center">
+            <Badge
+              variant="outline"
+              className={data?.srv_records ? "text-green-500 border-green-500/30" : "text-yellow-500 border-yellow-500/30"}
+            >
+              {data?.srv_records ? <Check className="h-3 w-3 mr-1" /> : null}
+              SRV Records
+            </Badge>
+          </div>
+          <div className="p-3 rounded-lg border text-center">
+            <Badge
+              variant="outline"
+              className={data?.autoconfig ? "text-green-500 border-green-500/30" : "text-yellow-500 border-yellow-500/30"}
+            >
+              {data?.autoconfig ? <Check className="h-3 w-3 mr-1" /> : null}
+              Thunderbird
+            </Badge>
+          </div>
+          <div className="p-3 rounded-lg border text-center">
+            <Badge
+              variant="outline"
+              className={data?.autodiscover ? "text-green-500 border-green-500/30" : "text-yellow-500 border-yellow-500/30"}
+            >
+              {data?.autodiscover ? <Check className="h-3 w-3 mr-1" /> : null}
+              Outlook
+            </Badge>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

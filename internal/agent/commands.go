@@ -131,6 +131,15 @@ func (r *CommandRegistry) registerBuiltins() {
 	r.commands["email_queue_flush"] = cmdEmailQueueFlush
 	r.commands["email_queue_delete"] = cmdEmailQueueDelete
 	r.commands["email_generate_dkim"] = cmdEmailGenerateDKIM
+
+	// SpamAssassin & ClamAV
+	r.commands["spam_configure"] = cmdSpamConfigure
+	r.commands["spam_status"] = cmdSpamStatus
+	r.commands["clamav_configure"] = cmdClamAVConfigure
+	r.commands["clamav_status"] = cmdClamAVStatus
+
+	// Mail autodiscovery
+	r.commands["email_write_autoconfig"] = cmdEmailWriteAutoconfig
 }
 
 // ---------- Param types ----------
@@ -2478,6 +2487,338 @@ func appendIfMissing(filePath, line, search string) {
 	}
 	defer f.Close()
 	f.WriteString(line + "\n")
+}
+
+// ---------- SpamAssassin ----------
+
+func cmdSpamConfigure(params json.RawMessage) (interface{}, error) {
+	var p struct {
+		Domain         string   `json:"domain"`
+		Enabled        bool     `json:"enabled"`
+		ScoreThreshold float64  `json:"score_threshold"`
+		Action         string   `json:"action"`
+		Whitelist      []string `json:"whitelist"`
+		Blacklist      []string `json:"blacklist"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil || p.Domain == "" {
+		return nil, fmt.Errorf("invalid params: domain required")
+	}
+
+	// Write per-domain SpamAssassin config
+	os.MkdirAll("/etc/spamassassin/local.d", 0755)
+	var cfg strings.Builder
+	cfg.WriteString(fmt.Sprintf("# PinkPanel spam config for %s\n", p.Domain))
+	cfg.WriteString(fmt.Sprintf("required_score %.1f\n", p.ScoreThreshold))
+
+	for _, addr := range p.Whitelist {
+		cfg.WriteString(fmt.Sprintf("whitelist_from %s\n", addr))
+	}
+	for _, addr := range p.Blacklist {
+		cfg.WriteString(fmt.Sprintf("blacklist_from %s\n", addr))
+	}
+
+	cfgPath := fmt.Sprintf("/etc/spamassassin/local.d/%s.cf", p.Domain)
+	if err := os.WriteFile(cfgPath, []byte(cfg.String()), 0644); err != nil {
+		return nil, fmt.Errorf("writing spam config: %w", err)
+	}
+
+	// Write Dovecot sieve rule based on action
+	sieveDir := "/var/lib/dovecot/sieve"
+	os.MkdirAll(sieveDir, 0755)
+
+	var sieve string
+	switch p.Action {
+	case "junk":
+		sieve = `require ["fileinto", "mailbox"];
+if header :contains "X-Spam-Flag" "YES" {
+    fileinto :create "Junk";
+    stop;
+}
+`
+	case "delete":
+		sieve = `require ["fileinto"];
+if header :contains "X-Spam-Flag" "YES" {
+    discard;
+    stop;
+}
+`
+	default: // "mark" — headers only, no filing
+		sieve = `# Spam is marked with X-Spam-Flag header only
+`
+	}
+
+	sievePath := sieveDir + "/spam-to-junk.sieve"
+	if err := os.WriteFile(sievePath, []byte(sieve), 0644); err != nil {
+		return nil, fmt.Errorf("writing sieve rule: %w", err)
+	}
+
+	// Compile sieve
+	exec.Command("sievec", sievePath).Run()
+
+	// Fix ownership
+	exec.Command("chown", "-R", "vmail:vmail", sieveDir).Run()
+
+	// Reload SpamAssassin
+	exec.Command("systemctl", "reload", "spamassassin").Run()
+
+	return map[string]string{"status": "ok"}, nil
+}
+
+func cmdSpamStatus(params json.RawMessage) (interface{}, error) {
+	result := map[string]interface{}{
+		"spamassassin_running": false,
+		"spamass_milter_running": false,
+	}
+
+	if err := exec.Command("systemctl", "is-active", "--quiet", "spamassassin").Run(); err == nil {
+		result["spamassassin_running"] = true
+	}
+	if err := exec.Command("systemctl", "is-active", "--quiet", "spamass-milter").Run(); err == nil {
+		result["spamass_milter_running"] = true
+	}
+
+	// Get version
+	out, err := exec.Command("spamassassin", "--version").CombinedOutput()
+	if err == nil {
+		result["version"] = strings.TrimSpace(string(out))
+	}
+
+	return result, nil
+}
+
+// ---------- ClamAV ----------
+
+func cmdClamAVConfigure(params json.RawMessage) (interface{}, error) {
+	var p struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params")
+	}
+
+	if p.Enabled {
+		// Write clamav-milter config
+		os.MkdirAll("/var/spool/postfix/clamav", 0755)
+		exec.Command("chown", "clamav:postfix", "/var/spool/postfix/clamav").Run()
+
+		milterConf := `MilterSocket /var/spool/postfix/clamav/clamav-milter.sock
+MilterSocketMode 660
+MilterSocketGroup postfix
+FixStaleSocket true
+User clamav
+ClamdSocket unix:/run/clamav/clamd.ctl
+OnInfected Reject
+LogInfected Basic
+LogClean Off
+`
+		if err := os.WriteFile("/etc/clamav/clamav-milter.conf", []byte(milterConf), 0644); err != nil {
+			return nil, fmt.Errorf("writing clamav-milter config: %w", err)
+		}
+
+		// Add ClamAV milter to Postfix if not present
+		out, _ := exec.Command("postconf", "-h", "smtpd_milters").CombinedOutput()
+		currentMilters := strings.TrimSpace(string(out))
+		clamMilter := "unix:/var/spool/postfix/clamav/clamav-milter.sock"
+		if !strings.Contains(currentMilters, "clamav") {
+			newMilters := currentMilters
+			if newMilters != "" {
+				newMilters += ", "
+			}
+			newMilters += clamMilter
+			exec.Command("postconf", "-e", "smtpd_milters = "+newMilters).Run()
+		}
+
+		exec.Command("systemctl", "enable", "--now", "clamav-daemon").Run()
+		exec.Command("systemctl", "enable", "--now", "clamav-freshclam").Run()
+		exec.Command("systemctl", "restart", "clamav-milter").Run()
+		exec.Command("postfix", "reload").Run()
+	} else {
+		// Remove ClamAV milter from Postfix
+		out, _ := exec.Command("postconf", "-h", "smtpd_milters").CombinedOutput()
+		currentMilters := strings.TrimSpace(string(out))
+		// Remove clamav socket from milters list
+		parts := strings.Split(currentMilters, ",")
+		var filtered []string
+		for _, p := range parts {
+			if !strings.Contains(strings.TrimSpace(p), "clamav") {
+				filtered = append(filtered, strings.TrimSpace(p))
+			}
+		}
+		exec.Command("postconf", "-e", "smtpd_milters = "+strings.Join(filtered, ", ")).Run()
+
+		exec.Command("systemctl", "stop", "clamav-milter").Run()
+		exec.Command("postfix", "reload").Run()
+	}
+
+	return map[string]string{"status": "ok"}, nil
+}
+
+func cmdClamAVStatus(params json.RawMessage) (interface{}, error) {
+	result := map[string]interface{}{
+		"clamav_running":    false,
+		"freshclam_running": false,
+		"milter_running":    false,
+		"enabled":           false,
+	}
+
+	if err := exec.Command("systemctl", "is-active", "--quiet", "clamav-daemon").Run(); err == nil {
+		result["clamav_running"] = true
+	}
+	if err := exec.Command("systemctl", "is-active", "--quiet", "clamav-freshclam").Run(); err == nil {
+		result["freshclam_running"] = true
+	}
+	if err := exec.Command("systemctl", "is-active", "--quiet", "clamav-milter").Run(); err == nil {
+		result["milter_running"] = true
+		result["enabled"] = true
+	}
+
+	// Get DB version info
+	out, err := exec.Command("clamscan", "--version").CombinedOutput()
+	if err == nil {
+		result["version"] = strings.TrimSpace(string(out))
+	}
+
+	return result, nil
+}
+
+// ---------- Mail Autodiscovery ----------
+
+func cmdEmailWriteAutoconfig(params json.RawMessage) (interface{}, error) {
+	var p struct {
+		Domain   string `json:"domain"`
+		Hostname string `json:"hostname"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil || p.Domain == "" {
+		return nil, fmt.Errorf("invalid params: domain required")
+	}
+	if p.Hostname == "" {
+		p.Hostname = "mail." + p.Domain
+	}
+
+	// Thunderbird autoconfig XML
+	autoconfigDir := fmt.Sprintf("/var/www/autoconfig/%s/mail", p.Domain)
+	os.MkdirAll(autoconfigDir, 0755)
+
+	thunderbirdXML := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<clientConfig version="1.1">
+  <emailProvider id="%s">
+    <domain>%s</domain>
+    <displayName>%s Mail</displayName>
+    <incomingServer type="imap">
+      <hostname>%s</hostname>
+      <port>993</port>
+      <socketType>SSL</socketType>
+      <authentication>password-cleartext</authentication>
+      <username>%%EMAILADDRESS%%</username>
+    </incomingServer>
+    <incomingServer type="imap">
+      <hostname>%s</hostname>
+      <port>143</port>
+      <socketType>STARTTLS</socketType>
+      <authentication>password-cleartext</authentication>
+      <username>%%EMAILADDRESS%%</username>
+    </incomingServer>
+    <outgoingServer type="smtp">
+      <hostname>%s</hostname>
+      <port>587</port>
+      <socketType>STARTTLS</socketType>
+      <authentication>password-cleartext</authentication>
+      <username>%%EMAILADDRESS%%</username>
+    </outgoingServer>
+  </emailProvider>
+</clientConfig>
+`, p.Domain, p.Domain, p.Domain, p.Hostname, p.Hostname, p.Hostname)
+
+	if err := os.WriteFile(autoconfigDir+"/config-v1.1.xml", []byte(thunderbirdXML), 0644); err != nil {
+		return nil, fmt.Errorf("writing autoconfig XML: %w", err)
+	}
+
+	// Outlook autodiscover XML
+	autodiscoverDir := fmt.Sprintf("/var/www/autodiscover/%s", p.Domain)
+	os.MkdirAll(autodiscoverDir, 0755)
+
+	outlookXML := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
+  <Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a">
+    <Account>
+      <AccountType>email</AccountType>
+      <Action>settings</Action>
+      <Protocol>
+        <Type>IMAP</Type>
+        <Server>%s</Server>
+        <Port>993</Port>
+        <SSL>on</SSL>
+        <LoginName>%%EMAILADDRESS%%</LoginName>
+      </Protocol>
+      <Protocol>
+        <Type>SMTP</Type>
+        <Server>%s</Server>
+        <Port>587</Port>
+        <Encryption>TLS</Encryption>
+        <LoginName>%%EMAILADDRESS%%</LoginName>
+      </Protocol>
+    </Account>
+  </Response>
+</Autodiscover>
+`, p.Hostname, p.Hostname)
+
+	if err := os.WriteFile(autodiscoverDir+"/autodiscover.xml", []byte(outlookXML), 0644); err != nil {
+		return nil, fmt.Errorf("writing autodiscover XML: %w", err)
+	}
+
+	// Fix ownership
+	exec.Command("chown", "-R", "www-data:www-data", "/var/www/autoconfig").Run()
+	exec.Command("chown", "-R", "www-data:www-data", "/var/www/autodiscover").Run()
+
+	// Create NGINX snippet for this domain's autoconfig
+	phpSock := findPHPSocket()
+	_ = phpSock // Not needed for static XML
+
+	nginxSnippet := fmt.Sprintf(`# Mail autodiscovery for %s
+location /.well-known/autoconfig/mail/config-v1.1.xml {
+    alias /var/www/autoconfig/%s/mail/config-v1.1.xml;
+    default_type application/xml;
+}
+
+location /autodiscover/autodiscover.xml {
+    alias /var/www/autodiscover/%s/autodiscover.xml;
+    default_type application/xml;
+}
+
+location /Autodiscover/Autodiscover.xml {
+    alias /var/www/autodiscover/%s/autodiscover.xml;
+    default_type application/xml;
+}
+`, p.Domain, p.Domain, p.Domain, p.Domain)
+
+	snippetPath := fmt.Sprintf("/etc/nginx/snippets/autoconfig-%s.conf", p.Domain)
+	if err := os.WriteFile(snippetPath, []byte(nginxSnippet), 0644); err != nil {
+		return nil, fmt.Errorf("writing nginx snippet: %w", err)
+	}
+
+	// Include snippet in domain's vhost if not already
+	vhostPath := fmt.Sprintf("/etc/nginx/sites-available/%s", p.Domain)
+	if data, err := os.ReadFile(vhostPath); err == nil {
+		content := string(data)
+		includeDirective := fmt.Sprintf("include snippets/autoconfig-%s.conf;", p.Domain)
+		if !strings.Contains(content, includeDirective) {
+			content = strings.Replace(content, "server_name ", includeDirective+"\n    server_name ", 1)
+			os.WriteFile(vhostPath, []byte(content), 0644)
+		}
+	}
+
+	exec.Command("nginx", "-t").Run()
+	exec.Command("systemctl", "reload", "nginx").Run()
+
+	return map[string]string{"status": "ok"}, nil
+}
+
+func findPHPSocket() string {
+	matches, _ := filepath.Glob("/run/php/php*-fpm.sock")
+	if len(matches) > 0 {
+		return matches[0]
+	}
+	return "/run/php/php-fpm.sock"
 }
 
 // ---------- Helpers ----------
