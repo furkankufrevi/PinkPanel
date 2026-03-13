@@ -39,7 +39,7 @@ import (
 //go:embed all:static
 var embeddedFiles embed.FS
 
-var version = "0.6.1-alpha"
+var version = "0.6.11-alpha"
 
 func main() {
 	// Parse flags
@@ -76,6 +76,16 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to run migrations")
 	}
 	log.Info().Msg("database migrations complete")
+
+	// Resolve any stale in_progress upgrade entries (upgrade restarts the service,
+	// so if we're starting up, any in_progress upgrade has completed)
+	res, _ := database.Exec(
+		"UPDATE version_history SET version = ?, status = 'completed' WHERE status = 'in_progress'",
+		version,
+	)
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Info().Int64("count", n).Msg("resolved in_progress upgrade entries")
+	}
 
 	// Initialize JWT manager
 	jwtManager, err := auth.NewJWTManager(
