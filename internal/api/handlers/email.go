@@ -1030,10 +1030,8 @@ func (h *EmailHandler) Webmail(c *fiber.Ctx) error {
 	adminID, _ := c.Locals("admin_id").(int64)
 	db.LogActivity(h.DB, adminID, "webmail_login", "email", accountID, fullEmail, c.IP())
 
-	// Build absolute URL pointing to NGINX (port 443), not the panel port.
-	// Strip port from Host header to get just the hostname.
-	host := c.Hostname()
-	webmailURL := fmt.Sprintf("https://%s/roundcube/signon.php?token=%s", host, token)
+	// Build absolute URL pointing to the mail vhost for this domain
+	webmailURL := fmt.Sprintf("https://mail.%s/roundcube/signon.php?token=%s", dom.Name, token)
 
 	return c.JSON(fiber.Map{
 		"url": webmailURL,
