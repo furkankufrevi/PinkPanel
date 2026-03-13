@@ -865,47 +865,34 @@ setup_roundcube() {
         fi
     fi
 
-    # Deploy signon.php script for auto-login
+    # Deploy signon.php — reads one-time token, auto-submits login form
     cat > /usr/share/roundcube/signon.php <<'RCSIGNON'
 <?php
 $token = isset($_GET['token']) ? preg_replace('/[^a-f0-9]/', '', $_GET['token']) : '';
-if (!$token) {
-    die('Missing token');
-}
+if (!$token) { die('Missing token'); }
 
 $tokenFile = '/var/lib/pinkpanel/roundcube-tokens/' . $token . '.json';
-if (!file_exists($tokenFile)) {
-    die('Invalid or expired token. Please try again from the panel.');
-}
+if (!file_exists($tokenFile)) { die('Invalid or expired token. Please try again from the panel.'); }
 
 $data = json_decode(file_get_contents($tokenFile), true);
 @unlink($tokenFile);
 
-if (!$data || empty($data['username']) || empty($data['password'])) {
-    die('Invalid token data');
-}
+if (!$data || empty($data['username']) || empty($data['password'])) { die('Invalid token data'); }
 
-// Set environment variables that Roundcube can read
-$_POST['_user'] = $data['username'];
-$_POST['_pass'] = $data['password'];
-$_POST['_task'] = 'login';
-$_POST['_action'] = 'login';
-
-// Include Roundcube bootstrap
-define('INSTALL_PATH', '/usr/share/roundcube/');
-require_once INSTALL_PATH . 'program/include/iniset.php';
-
-$rcmail = rcmail::get_instance(0, 'web');
-$rcmail->set_user(new rcube_user(null));
-
-// Perform login
-$auth = $rcmail->login($data['username'], $data['password'], 'localhost', false);
-if ($auth) {
-    header('Location: /roundcube/?_task=mail');
-} else {
-    die('Login failed. The password may have changed. Please update it from the panel.');
-}
-exit;
+$user = htmlspecialchars($data['username'], ENT_QUOTES, 'UTF-8');
+$pass = htmlspecialchars($data['password'], ENT_QUOTES, 'UTF-8');
+?><!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Signing in...</title></head>
+<body><p>Signing in to webmail...</p>
+<form id="rclogin" method="post" action="/roundcube/">
+  <input type="hidden" name="_task" value="login">
+  <input type="hidden" name="_action" value="login">
+  <input type="hidden" name="_user" value="<?php echo $user; ?>">
+  <input type="hidden" name="_pass" value="<?php echo $pass; ?>">
+  <input type="hidden" name="_timezone" value="UTC">
+</form>
+<script>document.getElementById('rclogin').submit();</script>
+</body></html>
 RCSIGNON
     chown www-data:www-data /usr/share/roundcube/signon.php
 
@@ -914,21 +901,24 @@ RCSIGNON
     php_sock=$(ls /run/php/php*-fpm.sock 2>/dev/null | head -1)
     [[ -z "$php_sock" ]] && php_sock="/run/php/php-fpm.sock"
 
+    # Determine Roundcube web root (varies by distro)
+    local rc_root="/usr/share/roundcube"
+    [[ -d /var/lib/roundcube/public_html ]] && rc_root="/var/lib/roundcube/public_html"
+
     cat > /etc/nginx/snippets/roundcube.conf <<RCNGINX
 location /roundcube/ {
-    alias /usr/share/roundcube/public_html/;
+    alias ${rc_root}/;
     index index.php;
 
     location ~ ^/roundcube/(.*\\.php)\$ {
-        alias /usr/share/roundcube/public_html/\$1;
+        alias ${rc_root}/\$1;
         fastcgi_pass unix:${php_sock};
         fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME /usr/share/roundcube/public_html/\$1;
+        fastcgi_param SCRIPT_FILENAME ${rc_root}/\$1;
         include fastcgi_params;
     }
 }
 
-# Fallback: some distros put files directly in /usr/share/roundcube/
 location ~ ^/roundcube/(config|temp|logs) {
     deny all;
 }
@@ -940,13 +930,6 @@ RCNGINX
             sed -i '/server_name _;/a\\n\tinclude snippets/roundcube.conf;' "$f"
         fi
     done
-
-    # Roundcube may install to different paths depending on distro
-    # Debian/Ubuntu uses /usr/share/roundcube with public_html symlink
-    if [[ ! -d /usr/share/roundcube/public_html ]]; then
-        # Create public_html as symlink to the main dir if it doesn't exist
-        ln -sf /usr/share/roundcube /usr/share/roundcube/public_html 2>/dev/null || true
-    fi
 
     nginx -t > /dev/null 2>&1 && systemctl reload nginx || warn "NGINX config test failed after Roundcube setup"
 

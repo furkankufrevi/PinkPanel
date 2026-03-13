@@ -55,6 +55,7 @@ func (h *UpdatesHandler) CheckForUpdates(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"current_version":  h.Version,
 			"update_available": false,
+			"error":            fmt.Sprintf("GitHub API returned %d", resp.StatusCode),
 		})
 	}
 

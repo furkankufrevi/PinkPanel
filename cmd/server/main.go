@@ -39,7 +39,7 @@ import (
 //go:embed all:static
 var embeddedFiles embed.FS
 
-var version = "0.5.0-alpha"
+var version = "0.6.0-alpha"
 
 func main() {
 	// Parse flags
