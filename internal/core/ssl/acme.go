@@ -21,6 +21,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/pinkpanel/pinkpanel/internal/agent"
+	"github.com/pinkpanel/pinkpanel/internal/core/dns"
 )
 
 const (
@@ -45,6 +46,7 @@ type ACMEService struct {
 	Email       string
 	Staging     bool // use staging server for testing
 	AgentClient *agent.Client
+	DNSSvc      *dns.Service
 }
 
 // IssueCertificate obtains a Let's Encrypt certificate for the given domains.
@@ -104,6 +106,95 @@ func (a *ACMEService) IssueCertificate(domains []string, webRoot string) (*Issue
 
 	// Parse expiry from the certificate
 	expiresAt := time.Now().Add(90 * 24 * time.Hour) // default 90 days
+	if block, _ := pem.Decode(certificates.Certificate); block != nil {
+		if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
+			expiresAt = cert.NotAfter
+		}
+	}
+
+	// Parse issuer
+	issuer := "Let's Encrypt"
+	if block, _ := pem.Decode(certificates.Certificate); block != nil {
+		if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
+			if len(cert.Issuer.Organization) > 0 {
+				issuer = cert.Issuer.Organization[0]
+			}
+		}
+	}
+
+	return &IssuedCert{
+		Certificate: string(certificates.Certificate),
+		PrivateKey:  string(certificates.PrivateKey),
+		IssuerCert:  string(certificates.IssuerCertificate),
+		Domain:      certificates.Domain,
+		Domains:     strings.Join(domains, ","),
+		Issuer:      issuer,
+		ExpiresAt:   expiresAt,
+	}, nil
+}
+
+// IssueCertificateDNS01 obtains a Let's Encrypt certificate using the DNS-01 challenge.
+// This is required for wildcard certificates. It uses PinkPanel's own BIND server
+// to create and clean up _acme-challenge TXT records.
+func (a *ACMEService) IssueCertificateDNS01(domains []string, domainID int64, domainName string) (*IssuedCert, error) {
+	if a.DNSSvc == nil {
+		return nil, fmt.Errorf("DNS service not configured for DNS-01 challenges")
+	}
+
+	user, err := a.loadOrCreateAccount()
+	if err != nil {
+		return nil, fmt.Errorf("loading ACME account: %w", err)
+	}
+
+	config := lego.NewConfig(user)
+	config.Certificate.KeyType = certcrypto.EC256
+
+	if a.Staging {
+		config.CADirURL = lego.LEDirectoryStaging
+	}
+
+	client, err := lego.NewClient(config)
+	if err != nil {
+		return nil, fmt.Errorf("creating ACME client: %w", err)
+	}
+
+	// Use DNS-01 challenge with BIND provider
+	provider := &bindDNS01Provider{
+		dnsSvc:      a.DNSSvc,
+		agentClient: a.AgentClient,
+		domainID:    domainID,
+		domainName:  domainName,
+	}
+
+	err = client.Challenge.SetDNS01Provider(provider)
+	if err != nil {
+		return nil, fmt.Errorf("setting DNS-01 provider: %w", err)
+	}
+
+	// Register if needed
+	if user.Registration == nil {
+		reg, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
+		if err != nil {
+			return nil, fmt.Errorf("registering ACME account: %w", err)
+		}
+		user.Registration = reg
+		if err := a.saveAccount(user); err != nil {
+			log.Error().Err(err).Msg("failed to save ACME account")
+		}
+	}
+
+	request := certificate.ObtainRequest{
+		Domains: domains,
+		Bundle:  true,
+	}
+
+	certificates, err := client.Certificate.Obtain(request)
+	if err != nil {
+		return nil, fmt.Errorf("obtaining certificate via DNS-01: %w", err)
+	}
+
+	// Parse expiry from the certificate
+	expiresAt := time.Now().Add(90 * 24 * time.Hour)
 	if block, _ := pem.Decode(certificates.Certificate); block != nil {
 		if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
 			expiresAt = cert.NotAfter

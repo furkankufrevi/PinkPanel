@@ -14,6 +14,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { toast } from "sonner";
 import {
@@ -22,11 +30,26 @@ import {
   deleteSSLCertificate,
   toggleSSLAutoRenew,
   toggleForceHTTPS,
+  toggleHSTS,
   issueLetsEncrypt,
 } from "@/api/ssl";
 import type { AxiosError } from "axios";
 import type { APIError } from "@/types/api";
-import { ShieldCheck, ShieldX, Upload, Trash2, Zap, Loader2 } from "lucide-react";
+import type { IssueLetsEncryptRequest, SecuredComponent } from "@/types/ssl";
+import {
+  ShieldCheck,
+  ShieldX,
+  Upload,
+  Trash2,
+  Zap,
+  Loader2,
+  RefreshCw,
+  Info,
+  CheckCircle2,
+  XCircle,
+} from "lucide-react";
+import { useQuery as useDomainQuery } from "@tanstack/react-query";
+import { getDomain } from "@/api/domains";
 
 export function DomainSSL() {
   const { id } = useParams<{ id: string }>();
@@ -35,10 +58,28 @@ export function DomainSSL() {
 
   const [showInstall, setShowInstall] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
+  const [showIssueDialog, setShowIssueDialog] = useState(false);
   const [certificate, setCertificate] = useState("");
   const [privateKey, setPrivateKey] = useState("");
   const [chain, setChain] = useState("");
   const [forceHttps, setForceHttps] = useState(true);
+
+  // Issue dialog state
+  const [issueOpts, setIssueOpts] = useState<IssueLetsEncryptRequest>({
+    secure_domain: true,
+    secure_wildcard: false,
+    include_www: true,
+    secure_webmail: false,
+    secure_mail: false,
+    assign_to_mail: false,
+  });
+
+  const { data: domainData } = useDomainQuery({
+    queryKey: ["domain", domainId],
+    queryFn: () => getDomain(domainId),
+    enabled: !!domainId,
+  });
+  const domainName = domainData?.name ?? "example.com";
 
   const { data: ssl, isLoading } = useQuery({
     queryKey: ["ssl", domainId],
@@ -84,14 +125,17 @@ export function DomainSSL() {
   });
 
   const letsEncryptMutation = useMutation({
-    mutationFn: () => issueLetsEncrypt(domainId, true),
+    mutationFn: (req: IssueLetsEncryptRequest) =>
+      issueLetsEncrypt(domainId, req),
     onSuccess: () => {
       toast.success("Let's Encrypt certificate issued successfully");
       queryClient.invalidateQueries({ queryKey: ["ssl", domainId] });
+      setShowIssueDialog(false);
     },
     onError: (err: AxiosError<APIError>) => {
       toast.error(
-        err.response?.data?.error?.message ?? "Failed to issue Let's Encrypt certificate"
+        err.response?.data?.error?.message ??
+          "Failed to issue Let's Encrypt certificate"
       );
     },
   });
@@ -121,9 +165,22 @@ export function DomainSSL() {
     },
   });
 
+  const hstsMutation = useMutation({
+    mutationFn: (enabled: boolean) => toggleHSTS(domainId, enabled),
+    onSuccess: () => {
+      toast.success("HSTS setting updated");
+      queryClient.invalidateQueries({ queryKey: ["ssl", domainId] });
+    },
+    onError: (err: AxiosError<APIError>) => {
+      toast.error(
+        err.response?.data?.error?.message ?? "Failed to update HSTS"
+      );
+    },
+  });
+
   if (isLoading) {
     return (
-      <div className="space-y-4 max-w-2xl">
+      <div className="space-y-4 max-w-4xl">
         <Skeleton className="h-48 w-full" />
       </div>
     );
@@ -134,43 +191,98 @@ export function DomainSSL() {
     ssl?.expires_at && new Date(ssl.expires_at) < new Date();
   const daysUntilExpiry = ssl?.expires_at
     ? Math.ceil(
-        (new Date(ssl.expires_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+        (new Date(ssl.expires_at).getTime() - Date.now()) /
+          (1000 * 60 * 60 * 24)
       )
     : null;
 
+  // Render secured component row
+  function ComponentRow({
+    component,
+  }: {
+    component: SecuredComponent;
+  }) {
+    return (
+      <div className="flex items-center justify-between py-2">
+        <span className="text-sm font-medium">{component.name}</span>
+        {component.secured ? (
+          <Badge className="bg-green-500/10 text-green-600 border-green-200 gap-1">
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            Secured
+          </Badge>
+        ) : (
+          <Badge
+            variant="outline"
+            className="text-muted-foreground gap-1"
+          >
+            <XCircle className="h-3.5 w-3.5" />
+            Not Secured
+          </Badge>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-6 max-w-2xl">
-      {/* Status Card */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            {isInstalled ? (
-              <ShieldCheck className="h-5 w-5 text-green-500" />
-            ) : (
+    <div className="space-y-6 max-w-4xl">
+      {/* No cert installed — show options */}
+      {!isInstalled && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
               <ShieldX className="h-5 w-5 text-muted-foreground" />
-            )}
-            SSL Certificate
-          </CardTitle>
-          <CardDescription>
-            {isInstalled
-              ? "An SSL certificate is installed for this domain"
-              : "No SSL certificate is installed for this domain"}
-          </CardDescription>
-        </CardHeader>
-        {isInstalled && ssl && (
-          <CardContent className="space-y-3">
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <span className="text-muted-foreground">Type</span>
-                <div className="mt-1">
+              SSL/TLS Certificate
+            </CardTitle>
+            <CardDescription>
+              No SSL certificate is installed for this domain. Choose an option
+              below to secure it.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex gap-3">
+            <Button
+              onClick={() => setShowIssueDialog(true)}
+              className="bg-pink-500 hover:bg-pink-600"
+            >
+              <Zap className="h-4 w-4 mr-1" />
+              Let's Encrypt
+            </Button>
+            <Button variant="outline" onClick={() => setShowInstall(true)}>
+              <Upload className="h-4 w-4 mr-1" />
+              Custom Certificate
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Cert installed — two-column layout */}
+      {isInstalled && ssl && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Main column */}
+          <div className="lg:col-span-2 space-y-6">
+            {/* Certificate Info */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <ShieldCheck className="h-5 w-5 text-green-500" />
+                  SSL/TLS Certificate
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Info bar */}
+                <div className="flex flex-wrap items-center gap-3 text-sm">
                   <Badge variant="outline">
                     {ssl.type === "letsencrypt" ? "Let's Encrypt" : "Custom"}
                   </Badge>
-                </div>
-              </div>
-              <div>
-                <span className="text-muted-foreground">Status</span>
-                <div className="mt-1">
+                  {ssl.domains && (
+                    <span className="text-muted-foreground">{ssl.domains}</span>
+                  )}
+                  <span className="text-muted-foreground">|</span>
+                  {ssl.expires_at && (
+                    <span className="text-muted-foreground">
+                      Valid until{" "}
+                      {new Date(ssl.expires_at).toLocaleDateString()}
+                    </span>
+                  )}
                   {isExpired ? (
                     <Badge variant="destructive">Expired</Badge>
                   ) : daysUntilExpiry !== null && daysUntilExpiry <= 30 ? (
@@ -181,73 +293,270 @@ export function DomainSSL() {
                     <Badge className="bg-green-500 text-white">Valid</Badge>
                   )}
                 </div>
-              </div>
-              {ssl.issuer && (
-                <div>
-                  <span className="text-muted-foreground">Issuer</span>
-                  <div className="mt-1 font-medium">{ssl.issuer}</div>
-                </div>
-              )}
-              {ssl.expires_at && (
-                <div>
-                  <span className="text-muted-foreground">Expires</span>
-                  <div className="mt-1 font-medium">
-                    {new Date(ssl.expires_at).toLocaleDateString()}
+
+                {/* Secured Components */}
+                {ssl.secured_components && (
+                  <div className="border rounded-lg p-4">
+                    <h4 className="text-sm font-semibold mb-3">
+                      Secured Components
+                    </h4>
+                    <div className="divide-y">
+                      <ComponentRow
+                        component={ssl.secured_components.domain}
+                      />
+                      <ComponentRow component={ssl.secured_components.www} />
+                      <ComponentRow component={ssl.secured_components.mail} />
+                      <ComponentRow
+                        component={ssl.secured_components.webmail}
+                      />
+                      <ComponentRow
+                        component={ssl.secured_components.wildcard}
+                      />
+                      <ComponentRow
+                        component={ssl.secured_components.mail_services}
+                      />
+                    </div>
                   </div>
+                )}
+
+                {/* Actions */}
+                <div className="flex gap-2 pt-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowIssueDialog(true)}
+                  >
+                    <RefreshCw className="h-4 w-4 mr-1" />
+                    Reissue Certificate
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => setShowDelete(true)}
+                  >
+                    <Trash2 className="h-4 w-4 mr-1" />
+                    Remove
+                  </Button>
                 </div>
-              )}
-            </div>
+              </CardContent>
+            </Card>
+          </div>
 
-            <div className="flex items-center justify-between pt-2 border-t">
-              <div>
-                <Label className="text-sm font-medium">Force HTTPS</Label>
-                <p className="text-xs text-muted-foreground">
-                  Redirect all HTTP traffic to HTTPS
-                </p>
-              </div>
-              <Switch
-                checked={ssl.force_https}
-                onCheckedChange={(checked) => forceHttpsMutation.mutate(checked)}
+          {/* Side column — Options */}
+          <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Options</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label className="text-sm font-medium">Force HTTPS</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Redirect HTTP to HTTPS
+                    </p>
+                  </div>
+                  <Switch
+                    checked={ssl.force_https}
+                    onCheckedChange={(checked) =>
+                      forceHttpsMutation.mutate(checked)
+                    }
+                  />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label className="text-sm font-medium">HSTS</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Strict Transport Security
+                    </p>
+                  </div>
+                  <Switch
+                    checked={ssl.hsts}
+                    onCheckedChange={(checked) => hstsMutation.mutate(checked)}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label className="text-sm font-medium">Auto-Renew</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Renew before expiration
+                    </p>
+                  </div>
+                  <Switch
+                    checked={ssl.auto_renew}
+                    onCheckedChange={(checked) =>
+                      autoRenewMutation.mutate(checked)
+                    }
+                  />
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {/* Issue Let's Encrypt Dialog */}
+      <Dialog
+        open={showIssueDialog}
+        onOpenChange={setShowIssueDialog}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Issue Let's Encrypt Certificate</DialogTitle>
+            <DialogDescription>
+              Select which components to secure with SSL/TLS.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2">
+            {/* Secure domain — always checked, disabled */}
+            <label className="flex items-start gap-3 p-3 rounded-lg border bg-muted/30">
+              <input
+                type="checkbox"
+                checked={issueOpts.secure_domain}
+                disabled
+                className="mt-0.5 h-4 w-4 rounded border-input accent-pink-500"
               />
-            </div>
-
-            <div className="flex items-center justify-between pt-2 border-t">
-              <div>
-                <Label className="text-sm font-medium">Auto-Renew</Label>
-                <p className="text-xs text-muted-foreground">
-                  Automatically renew before expiration
-                </p>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium">Secure the domain</div>
+                <div className="text-xs text-muted-foreground">
+                  {domainName}
+                </div>
               </div>
-              <Switch
-                checked={ssl.auto_renew}
-                onCheckedChange={(checked) => autoRenewMutation.mutate(checked)}
-              />
-            </div>
+            </label>
 
-            <div className="flex gap-2 pt-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowInstall(true)}
-              >
-                <Upload className="h-4 w-4 mr-1" />
-                Replace
-              </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => setShowDelete(true)}
-              >
-                <Trash2 className="h-4 w-4 mr-1" />
-                Remove
-              </Button>
-            </div>
-          </CardContent>
-        )}
-        {!isInstalled && (
-          <CardContent className="flex gap-2">
+            {/* Include www */}
+            <label className="flex items-start gap-3 p-3 rounded-lg border cursor-pointer hover:bg-muted/30 transition-colors">
+              <input
+                type="checkbox"
+                checked={issueOpts.include_www}
+                onChange={(e) =>
+                  setIssueOpts((o) => ({ ...o, include_www: e.target.checked }))
+                }
+                className="mt-0.5 h-4 w-4 rounded border-input accent-pink-500"
+              />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium">Include www</div>
+                <div className="text-xs text-muted-foreground">
+                  www.{domainName}
+                </div>
+              </div>
+            </label>
+
+            {/* Secure wildcard */}
+            <label className="flex items-start gap-3 p-3 rounded-lg border cursor-pointer hover:bg-muted/30 transition-colors">
+              <input
+                type="checkbox"
+                checked={issueOpts.secure_wildcard}
+                onChange={(e) =>
+                  setIssueOpts((o) => ({
+                    ...o,
+                    secure_wildcard: e.target.checked,
+                  }))
+                }
+                className="mt-0.5 h-4 w-4 rounded border-input accent-pink-500"
+              />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium flex items-center gap-1.5">
+                  Secure wildcard
+                  <span
+                    title="Uses DNS-01 challenge via your BIND server. Covers all subdomains."
+                    className="cursor-help"
+                  >
+                    <Info className="h-3.5 w-3.5 text-muted-foreground" />
+                  </span>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  *.{domainName}
+                </div>
+              </div>
+            </label>
+
+            {/* Secure mail */}
+            <label className="flex items-start gap-3 p-3 rounded-lg border cursor-pointer hover:bg-muted/30 transition-colors">
+              <input
+                type="checkbox"
+                checked={issueOpts.secure_mail}
+                onChange={(e) =>
+                  setIssueOpts((o) => ({
+                    ...o,
+                    secure_mail: e.target.checked,
+                  }))
+                }
+                className="mt-0.5 h-4 w-4 rounded border-input accent-pink-500"
+              />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium">Secure mail</div>
+                <div className="text-xs text-muted-foreground">
+                  mail.{domainName}
+                </div>
+              </div>
+            </label>
+
+            {/* Secure webmail */}
+            <label className="flex items-start gap-3 p-3 rounded-lg border cursor-pointer hover:bg-muted/30 transition-colors">
+              <input
+                type="checkbox"
+                checked={issueOpts.secure_webmail}
+                onChange={(e) =>
+                  setIssueOpts((o) => ({
+                    ...o,
+                    secure_webmail: e.target.checked,
+                  }))
+                }
+                className="mt-0.5 h-4 w-4 rounded border-input accent-pink-500"
+              />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium">Secure webmail</div>
+                <div className="text-xs text-muted-foreground">
+                  webmail.{domainName}
+                </div>
+              </div>
+            </label>
+
+            {/* Assign to mail services */}
+            <label className="flex items-start gap-3 p-3 rounded-lg border cursor-pointer hover:bg-muted/30 transition-colors">
+              <input
+                type="checkbox"
+                checked={issueOpts.assign_to_mail}
+                onChange={(e) =>
+                  setIssueOpts((o) => ({
+                    ...o,
+                    assign_to_mail: e.target.checked,
+                  }))
+                }
+                className="mt-0.5 h-4 w-4 rounded border-input accent-pink-500"
+              />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium">
+                  Assign to mail services
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Configure Postfix/Dovecot (IMAP, POP, SMTP)
+                </div>
+              </div>
+            </label>
+          </div>
+
+          {letsEncryptMutation.isError && (
+            <p className="text-sm text-destructive">
+              {(letsEncryptMutation.error as AxiosError<APIError>)?.response
+                ?.data?.error?.message ?? "Issuance failed"}
+            </p>
+          )}
+
+          <DialogFooter>
             <Button
-              onClick={() => letsEncryptMutation.mutate()}
+              variant="outline"
+              onClick={() => setShowIssueDialog(false)}
+              disabled={letsEncryptMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => letsEncryptMutation.mutate(issueOpts)}
               disabled={letsEncryptMutation.isPending}
               className="bg-pink-500 hover:bg-pink-600"
             >
@@ -256,24 +565,19 @@ export function DomainSSL() {
               ) : (
                 <Zap className="h-4 w-4 mr-1" />
               )}
-              {letsEncryptMutation.isPending ? "Issuing..." : "Issue Let's Encrypt"}
+              {letsEncryptMutation.isPending
+                ? "Issuing..."
+                : "Issue Certificate"}
             </Button>
-            <Button
-              variant="outline"
-              onClick={() => setShowInstall(true)}
-            >
-              <Upload className="h-4 w-4 mr-1" />
-              Custom Certificate
-            </Button>
-          </CardContent>
-        )}
-      </Card>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      {/* Install Form */}
+      {/* Custom Install Form */}
       {showInstall && (
         <Card>
           <CardHeader>
-            <CardTitle>Install SSL Certificate</CardTitle>
+            <CardTitle>Install Custom Certificate</CardTitle>
             <CardDescription>
               Paste your certificate and private key in PEM format
             </CardDescription>
@@ -300,9 +604,7 @@ export function DomainSSL() {
               />
             </div>
             <div className="space-y-2">
-              <Label>
-                CA Chain (optional)
-              </Label>
+              <Label>CA Chain (optional)</Label>
               <Textarea
                 value={chain}
                 onChange={(e) => setChain(e.target.value)}
@@ -328,7 +630,9 @@ export function DomainSSL() {
                 }
                 className="bg-pink-500 hover:bg-pink-600"
               >
-                {installMutation.isPending ? "Installing..." : "Install Certificate"}
+                {installMutation.isPending
+                  ? "Installing..."
+                  : "Install Certificate"}
               </Button>
               <Button
                 variant="outline"

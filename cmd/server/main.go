@@ -40,7 +40,7 @@ import (
 //go:embed all:static
 var embeddedFiles embed.FS
 
-var version = "0.7.0-alpha"
+var version = "0.7.1-alpha"
 
 func main() {
 	// Parse flags
@@ -176,6 +176,7 @@ func main() {
 	acmeSvc := &sslpkg.ACMEService{
 		Email:       "admin@localhost", // will be updated from DB settings
 		AgentClient: agentClient,
+		DNSSvc:      dnsSvc,
 	}
 	// Try to load admin email from DB for ACME
 	var adminEmail string
@@ -186,6 +187,7 @@ func main() {
 		DB:          database,
 		SSLSvc:      sslSvc,
 		DomainSvc:   domainSvc,
+		DNSSvc:      dnsSvc,
 		AgentClient: agentClient,
 		ACMESvc:     acmeSvc,
 	}
@@ -360,6 +362,7 @@ func main() {
 	protected.Delete("/domains/:id/ssl", sslHandler.DeleteCertificate)
 	protected.Put("/domains/:id/ssl/auto-renew", sslHandler.ToggleAutoRenew)
 	protected.Put("/domains/:id/ssl/force-https", sslHandler.ToggleForceHTTPS)
+	protected.Put("/domains/:id/ssl/hsts", sslHandler.ToggleHSTS)
 	protected.Put("/domains/:id/modsecurity", domainHandler.ToggleModSecurity)
 
 	// Database routes

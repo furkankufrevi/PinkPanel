@@ -512,7 +512,11 @@ func (h *EmailHandler) ensureDKIM(domainID int64, domainName string) {
 	records, _ := h.DNSSvc.ListByDomain(domainID)
 	for _, r := range records {
 		if r.Type == "TXT" && containsSubstr(r.Name, "._domainkey") {
-			return // Already has DKIM
+			// DKIM DNS record exists but ensure OpenDKIM tables are populated too
+			if _, err := h.AgentClient.Call("email_generate_dkim", map[string]any{"domain": domainName}); err != nil {
+				log.Error().Err(err).Str("domain", domainName).Msg("failed to ensure OpenDKIM tables")
+			}
+			return
 		}
 	}
 
@@ -1255,89 +1259,44 @@ func (h *EmailHandler) syncVirtualMaps() {
 func (h *EmailHandler) regenerateZone(domainID int64, domainName string) {
 	records, err := h.DNSSvc.ListByDomain(domainID)
 	if err != nil {
+		log.Error().Err(err).Str("domain", domainName).Msg("failed to list DNS records for zone regeneration")
 		return
 	}
 
-	// Build zone content (simplified — use the same template as DNS handler)
-	// We call the agent to write and reload the zone
-	type zoneRecord struct {
-		Name     string `json:"name"`
-		TTL      int    `json:"ttl"`
-		Class    string `json:"class"`
-		Type     string `json:"type"`
-		Value    string `json:"value"`
-		Priority int    `json:"priority,omitempty"`
-	}
-	var zoneRecords []zoneRecord
+	zoneRecords := make([]tmpl.ZoneRecord, 0, len(records))
 	for _, r := range records {
-		zr := zoneRecord{Name: r.Name, TTL: r.TTL, Class: "IN", Type: r.Type, Value: r.Value}
+		zr := tmpl.ZoneRecord{
+			Name:  r.Name,
+			TTL:   r.TTL,
+			Class: "IN",
+			Type:  r.Type,
+			Value: r.Value,
+		}
 		if r.Priority != nil {
 			zr.Priority = *r.Priority
 		}
 		zoneRecords = append(zoneRecords, zr)
 	}
 
-	// Use the template package to render
-	// For simplicity, call dns_write_zone + dns_reload through agent
-	// The DNS handler's regenerateZone is not easily reusable since it takes *DNSHandler
-	// Instead, we use the template directly
-	tmplPkg, _ := getZoneContent(domainName, records)
-	if tmplPkg != "" {
-		h.AgentClient.Call("dns_write_zone", map[string]any{
-			"domain":  domainName,
-			"content": tmplPkg,
-		})
-		h.AgentClient.Call("dns_reload", nil)
-	}
-}
-
-// getZoneContent builds a zone file from records (lightweight version).
-func getZoneContent(domain string, records []dns.Record) (string, error) {
-	// Use the template package
-	zoneRecords := make([]struct {
-		Name     string
-		TTL      int
-		Class    string
-		Type     string
-		Value    string
-		Priority int
-	}, 0, len(records))
-
-	for _, r := range records {
-		zr := struct {
-			Name     string
-			TTL      int
-			Class    string
-			Type     string
-			Value    string
-			Priority int
-		}{Name: r.Name, TTL: r.TTL, Class: "IN", Type: r.Type, Value: r.Value}
-		if r.Priority != nil {
-			zr.Priority = *r.Priority
-		}
-		zoneRecords = append(zoneRecords, zr)
+	zoneContent, err := tmpl.RenderZoneFile(tmpl.ZoneFileData{
+		Domain:  domainName,
+		Records: zoneRecords,
+	})
+	if err != nil {
+		log.Error().Err(err).Str("domain", domainName).Msg("failed to render zone file")
+		return
 	}
 
-	// Build simple zone file
-	content := fmt.Sprintf("$TTL 3600\n$ORIGIN %s.\n\n", domain)
-	for _, r := range zoneRecords {
-		name := r.Name
-		if name == "@" {
-			name = domain + "."
-		} else if name != "" {
-			name = name + "." + domain + "."
-		}
-
-		switch r.Type {
-		case "MX":
-			content += fmt.Sprintf("%-30s %d IN %-6s %d %s\n", name, r.TTL, r.Type, r.Priority, r.Value)
-		case "TXT":
-			content += fmt.Sprintf("%-30s %d IN %-6s \"%s\"\n", name, r.TTL, r.Type, r.Value)
-		default:
-			content += fmt.Sprintf("%-30s %d IN %-6s %s\n", name, r.TTL, r.Type, r.Value)
-		}
+	if _, err := h.AgentClient.Call("dns_write_zone", map[string]any{
+		"domain":  domainName,
+		"content": zoneContent,
+	}); err != nil {
+		log.Error().Err(err).Str("domain", domainName).Msg("failed to write zone file")
+		return
 	}
-	return content, nil
+	if _, err := h.AgentClient.Call("dns_reload", nil); err != nil {
+		log.Error().Err(err).Str("domain", domainName).Msg("failed to reload DNS after zone update")
+	}
 }
 
 func containsSubstr(s, substr string) bool {

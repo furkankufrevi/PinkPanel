@@ -25,6 +25,7 @@ type CertForRenewal struct {
 	DomainName   string
 	DocumentRoot string
 	PHPVersion   string
+	// ChallengeType, MailSSL, DomainID are inherited from Certificate
 }
 
 // ListExpiringCerts returns Let's Encrypt certs expiring within the given duration.
@@ -33,6 +34,7 @@ func (s *Service) ListExpiringCerts(within time.Duration) ([]CertForRenewal, err
 	rows, err := s.DB.Query(`
 		SELECT c.id, c.domain_id, c.type, c.cert_path, c.key_path, c.chain_path,
 		       c.issuer, c.domains, c.expires_at, c.auto_renew, c.force_https,
+		       c.hsts, c.mail_ssl, c.challenge_type,
 		       d.name, d.document_root, d.php_version
 		FROM ssl_certificates c
 		JOIN domains d ON d.id = c.domain_id
@@ -49,10 +51,12 @@ func (s *Service) ListExpiringCerts(within time.Duration) ([]CertForRenewal, err
 	for rows.Next() {
 		var c CertForRenewal
 		var chainPath, issuer, domains *string
-		var forceHTTPS int
+		var forceHTTPS, hsts, mailSSL int
+		var challengeType string
 		err := rows.Scan(
 			&c.ID, &c.DomainID, &c.Type, &c.CertPath, &c.KeyPath, &chainPath,
 			&issuer, &domains, &c.ExpiresAt, &c.AutoRenew, &forceHTTPS,
+			&hsts, &mailSSL, &challengeType,
 			&c.DomainName, &c.DocumentRoot, &c.PHPVersion,
 		)
 		if err != nil {
@@ -62,6 +66,12 @@ func (s *Service) ListExpiringCerts(within time.Duration) ([]CertForRenewal, err
 		c.Issuer = issuer
 		c.Domains = domains
 		c.ForceHTTPS = forceHTTPS == 1
+		c.HSTS = hsts == 1
+		c.MailSSL = mailSSL == 1
+		c.ChallengeType = challengeType
+		if c.ChallengeType == "" {
+			c.ChallengeType = "http-01"
+		}
 		certs = append(certs, c)
 	}
 	return certs, nil
@@ -131,8 +141,14 @@ func (r *RenewalService) renewCert(cert CertForRenewal) {
 		}
 	}
 
-	// Issue certificate (challenge tokens written via agent in the provider)
-	issued, err := r.ACMESvc.IssueCertificate(domains, cert.DocumentRoot)
+	// Issue certificate using the appropriate challenge type
+	var issued *IssuedCert
+	var err error
+	if cert.ChallengeType == "dns-01" {
+		issued, err = r.ACMESvc.IssueCertificateDNS01(domains, cert.DomainID, cert.DomainName)
+	} else {
+		issued, err = r.ACMESvc.IssueCertificate(domains, cert.DocumentRoot)
+	}
 	if err != nil {
 		logger.Error().Err(err).Msg("renewal failed")
 		return
@@ -155,17 +171,32 @@ func (r *RenewalService) renewCert(cert CertForRenewal) {
 		chainPath = cp
 	}
 
-	// Update database (preserve force_https setting)
-	if _, err := r.SSLSvc.Install(cert.DomainID, "letsencrypt", certPath, keyPath, chainPath, issued.Issuer, issued.Domains, issued.ExpiresAt, cert.ForceHTTPS); err != nil {
+	// Update database (preserve force_https, hsts, mail_ssl, challenge_type settings)
+	if _, err := r.SSLSvc.Install(cert.DomainID, "letsencrypt", certPath, keyPath, chainPath, issued.Issuer, issued.Domains, issued.ExpiresAt, cert.ForceHTTPS, InstallOpts{
+		HSTS:          cert.HSTS,
+		MailSSL:       cert.MailSSL,
+		ChallengeType: cert.ChallengeType,
+	}); err != nil {
 		logger.Error().Err(err).Msg("failed to update certificate in database")
 		return
 	}
 
-	// Update NGINX (preserve force_https setting)
+	// If mail SSL is enabled, re-configure Postfix/Dovecot with renewed cert
+	if cert.MailSSL {
+		if _, err := r.AgentClient.Call("email_configure_ssl", map[string]any{
+			"domain":    cert.DomainName,
+			"cert_path": certPath,
+			"key_path":  keyPath,
+		}); err != nil {
+			logger.Error().Err(err).Msg("failed to update mail SSL after renewal")
+		}
+	}
+
+	// Update NGINX (preserve force_https and hsts settings)
 	vhostContent, err := tmpl.RenderNginxVhost(tmpl.NginxVhostData{
 		Domain: cert.DomainName, DocumentRoot: cert.DocumentRoot, PHPVersion: cert.PHPVersion,
 		SSLEnabled: true, SSLCertPath: certPath, SSLKeyPath: keyPath, SSLChainPath: chainPath,
-		ForceHTTPS: cert.ForceHTTPS, HTTP2: true, HSTS: true, HSTSMaxAge: 31536000,
+		ForceHTTPS: cert.ForceHTTPS, HTTP2: true, HSTS: cert.HSTS, HSTSMaxAge: 31536000,
 	})
 	if err != nil {
 		logger.Error().Err(err).Msg("failed to render NGINX vhost")

@@ -1,5 +1,5 @@
 import api from "@/api/client";
-import type { SSLCertificate, InstallSSLRequest } from "@/types/ssl";
+import type { SSLCertificate, InstallSSLRequest, IssueLetsEncryptRequest } from "@/types/ssl";
 
 export async function getSSLCertificate(domainId: number): Promise<SSLCertificate> {
   const { data } = await api.get(`/domains/${domainId}/ssl`);
@@ -32,12 +32,17 @@ export async function toggleForceHTTPS(
   await api.put(`/domains/${domainId}/ssl/force-https`, { enabled });
 }
 
+export async function toggleHSTS(
+  domainId: number,
+  enabled: boolean
+): Promise<void> {
+  await api.put(`/domains/${domainId}/ssl/hsts`, { enabled });
+}
+
 export async function issueLetsEncrypt(
   domainId: number,
-  includeWww: boolean = true
+  req: IssueLetsEncryptRequest
 ): Promise<SSLCertificate> {
-  const { data } = await api.post(`/domains/${domainId}/ssl/issue`, {
-    include_www: includeWww,
-  });
+  const { data } = await api.post(`/domains/${domainId}/ssl/issue`, req);
   return data;
 }

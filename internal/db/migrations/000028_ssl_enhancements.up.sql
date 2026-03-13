@@ -1,0 +1,3 @@
+ALTER TABLE ssl_certificates ADD COLUMN hsts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ssl_certificates ADD COLUMN mail_ssl INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ssl_certificates ADD COLUMN challenge_type TEXT NOT NULL DEFAULT 'http-01';
