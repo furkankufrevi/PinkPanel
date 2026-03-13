@@ -829,9 +829,38 @@ func (h *EmailHandler) SetupAutodiscovery(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"status": "ok", "created": created})
 }
 
+// SetupMailVhost is an API endpoint to create/recreate the mail.<domain> vhost with SSL.
+func (h *EmailHandler) SetupMailVhost(c *fiber.Ctx) error {
+	domainID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fiber.Map{"code": "bad_request", "message": "invalid domain ID"}})
+	}
+
+	dom, err := h.DomainSvc.GetByID(domainID)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": fiber.Map{"code": "not_found", "message": "domain not found"}})
+	}
+
+	mailDomain := "mail." + dom.Name
+	go h.setupMailVhost(mailDomain, dom.DocumentRoot)
+
+	adminID, _ := c.Locals("admin_id").(int64)
+	db.LogActivity(h.DB, adminID, "setup_mail_vhost", "email", domainID, mailDomain, c.IP())
+
+	return c.JSON(fiber.Map{"status": "ok", "message": "Mail vhost setup started for " + mailDomain})
+}
+
 // setupMailVhost creates an nginx vhost for mail.<domain> with SSL.
 // Runs async — first creates HTTP-only vhost (for ACME challenge), issues SSL, then upgrades to HTTPS.
 func (h *EmailHandler) setupMailVhost(mailDomain, documentRoot string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error().Interface("panic", r).Str("domain", mailDomain).Msg("panic in setupMailVhost")
+		}
+	}()
+
+	log.Info().Str("domain", mailDomain).Msg("setting up mail vhost")
+
 	configPath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", mailDomain)
 	enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", mailDomain)
 
@@ -844,26 +873,30 @@ func (h *EmailHandler) setupMailVhost(mailDomain, documentRoot string) {
 		return
 	}
 
+	log.Info().Str("path", configPath).Msg("writing mail vhost config")
 	if _, err := h.AgentClient.Call("file_write", map[string]any{
 		"path": configPath, "content": httpVhost, "mode": "0644",
 	}); err != nil {
-		log.Error().Err(err).Msg("failed to write mail nginx config")
+		log.Error().Err(err).Str("path", configPath).Msg("failed to write mail nginx config")
 		return
 	}
+	log.Info().Str("path", enabledPath).Msg("writing mail vhost enabled config")
 	if _, err := h.AgentClient.Call("file_write", map[string]any{
 		"path": enabledPath, "content": httpVhost, "mode": "0644",
 	}); err != nil {
-		log.Error().Err(err).Msg("failed to write mail nginx enabled config")
+		log.Error().Err(err).Str("path", enabledPath).Msg("failed to write mail nginx enabled config")
 		return
 	}
+	log.Info().Msg("testing nginx config for mail vhost")
 	if _, err := h.AgentClient.Call("nginx_test", nil); err != nil {
-		log.Error().Err(err).Msg("mail vhost nginx test failed")
+		log.Error().Err(err).Msg("mail vhost nginx test failed — check snippets/roundcube.conf exists")
 		return
 	}
 	if _, err := h.AgentClient.Call("nginx_reload", nil); err != nil {
 		log.Error().Err(err).Msg("failed to reload nginx for mail vhost")
 		return
 	}
+	log.Info().Str("domain", mailDomain).Msg("HTTP mail vhost created successfully")
 
 	// Step 2: Issue SSL certificate for mail.<domain>
 	if h.ACMESvc == nil {

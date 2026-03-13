@@ -446,6 +446,7 @@ func main() {
 	domainEmail.Delete("/spam/list/:entryId", emailHandler.DeleteSpamEntry)
 	domainEmail.Get("/autodiscovery", emailHandler.GetAutodiscoveryStatus)
 	domainEmail.Post("/autodiscovery", emailHandler.SetupAutodiscovery)
+	domainEmail.Post("/mail-vhost", emailHandler.SetupMailVhost)
 	domainEmail.Get("/mail-ssl", emailHandler.GetMailSSLStatus)
 	domainEmail.Post("/mail-ssl", emailHandler.ConfigureMailSSL)
 	adminOnly.Get("/email/queue", emailHandler.ListQueue)
