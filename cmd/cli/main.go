@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "0.6.2"
+var version = "0.6.24-alpha"
 
 func main() {
 	rootCmd := &cobra.Command{
