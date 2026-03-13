@@ -369,12 +369,19 @@ install_missing_packages() {
     dpkg -l roundcube-core &>/dev/null 2>&1 || missing+=("roundcube" "roundcube-plugins")
     command -v spamd &>/dev/null || missing+=("spamassassin" "spamass-milter")
     command -v clamd &>/dev/null || missing+=("clamav" "clamav-daemon" "clamav-milter")
-    dpkg -l dovecot-sieve &>/dev/null 2>&1 || missing+=("dovecot-sieve" "dovecot-managesieved")
+    dpkg -s dovecot-sieve &>/dev/null 2>&1 || missing+=("dovecot-sieve" "dovecot-managesieved")
     if (( ${#missing[@]} > 0 )); then
         log "Installing missing packages: ${missing[*]}..."
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
-        apt-get install -y -qq "${missing[@]}" > /dev/null
+        apt-get install -y "${missing[@]}"
+        # Restart Dovecot if sieve was just installed
+        if [[ " ${missing[*]} " == *" dovecot-sieve "* ]]; then
+            log "Restarting Dovecot after sieve install..."
+            systemctl restart dovecot > /dev/null 2>&1 || true
+            # Flush any stuck emails in deferred queue
+            postqueue -f > /dev/null 2>&1 || true
+        fi
     fi
 }
 
