@@ -247,17 +247,18 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 	serverIP := getServerIP()
 	serverIPv6 := getServerIPv6()
 	if parentDomain != nil {
-		// Subdomain: add A record to parent zone (separate_dns defaults to false)
+		// Subdomain: add A/AAAA records to parent zone (separate_dns defaults to false)
 		subPrefix := extractSubPrefix(d.Name, parentDomain.Name)
 		if _, err := h.DNSSvc.Create(parentDomain.ID, "A", subPrefix, serverIP, 3600, nil); err != nil {
 			log.Printf("WARNING: failed to create DNS A record for subdomain %s: %v", d.Name, err)
-		} else {
-			provisionDNSZone(h.DNSSvc, h.AgentClient, parentDomain.ID, parentDomain.Name)
 		}
-		// Add AAAA record for subdomain if IPv6 available
 		if serverIPv6 != "" {
-			h.DNSSvc.Create(parentDomain.ID, "AAAA", subPrefix, serverIPv6, 3600, nil)
+			if _, err := h.DNSSvc.Create(parentDomain.ID, "AAAA", subPrefix, serverIPv6, 3600, nil); err != nil {
+				log.Printf("WARNING: failed to create DNS AAAA record for subdomain %s: %v", d.Name, err)
+			}
 		}
+		// Regenerate parent zone to include the new subdomain records
+		provisionDNSZone(h.DNSSvc, h.AgentClient, parentDomain.ID, parentDomain.Name)
 		// Clean up any stale separate zone for this subdomain (from previous creation/toggle)
 		h.AgentClient.Call("dns_remove_zone", map[string]interface{}{"domain": d.Name})
 		h.AgentClient.Call("dns_reload", nil)
@@ -447,7 +448,7 @@ func (h *DomainHandler) toggleSeparateDNS(d *domain.Domain, separateDNS bool) {
 			provisionDNSZone(h.DNSSvc, h.AgentClient, d.ID, d.Name)
 		}
 	} else {
-		// Turning OFF: remove subdomain zone, add A back to parent
+		// Turning OFF: remove subdomain zone, add A/AAAA back to parent
 		_ = h.DNSSvc.DeleteByDomain(d.ID)
 		if _, err := h.AgentClient.Call("dns_remove_zone", map[string]interface{}{"domain": d.Name}); err != nil {
 			log.Printf("WARNING: failed to remove DNS zone for %s: %v", d.Name, err)
@@ -458,9 +459,14 @@ func (h *DomainHandler) toggleSeparateDNS(d *domain.Domain, separateDNS bool) {
 
 		if _, err := h.DNSSvc.Create(parent.ID, "A", subPrefix, serverIP, 3600, nil); err != nil {
 			log.Printf("WARNING: failed to re-add DNS A record for %s: %v", d.Name, err)
-		} else {
-			provisionDNSZone(h.DNSSvc, h.AgentClient, parent.ID, parent.Name)
 		}
+		if serverIPv6 != "" {
+			if _, err := h.DNSSvc.Create(parent.ID, "AAAA", subPrefix, serverIPv6, 3600, nil); err != nil {
+				log.Printf("WARNING: failed to re-add DNS AAAA record for %s: %v", d.Name, err)
+			}
+		}
+		// Regenerate parent zone with the new subdomain records
+		provisionDNSZone(h.DNSSvc, h.AgentClient, parent.ID, parent.Name)
 	}
 
 	h.DomainSvc.UpdateSeparateDNS(d.ID, separateDNS)
