@@ -322,7 +322,13 @@ export function DomainGit() {
                 </Label>
                 <Input
                   value={newRemoteURL}
-                  onChange={(e) => setNewRemoteURL(e.target.value)}
+                  onChange={(e) => {
+                    const url = e.target.value;
+                    setNewRemoteURL(url);
+                    // Auto-fill name from repo URL
+                    const match = url.match(/\/([^/]+?)(?:\.git)?$/);
+                    if (match) setNewName(match[1]);
+                  }}
                   placeholder="https://github.com/user/repo.git"
                   autoFocus
                 />
