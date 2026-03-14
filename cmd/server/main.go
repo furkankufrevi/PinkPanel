@@ -147,10 +147,12 @@ func main() {
 	// Domain service & handler
 	domainSvc := &domain.Service{DB: database}
 	dnsSvc := &dns.Service{DB: database}
+	sslSvc := &sslpkg.Service{DB: database}
 	domainHandler := &handlers.DomainHandler{
 		DB:          database,
 		DomainSvc:   domainSvc,
 		DNSSvc:      dnsSvc,
+		SSLSvc:      sslSvc,
 		AgentClient: agentClient,
 	}
 
@@ -161,9 +163,6 @@ func main() {
 		DomainSvc:   domainSvc,
 		AgentClient: agentClient,
 	}
-
-	// SSL service (needed by PHP handler for vhost rendering)
-	sslSvc := &sslpkg.Service{DB: database}
 
 	// PHP service & handler
 	phpSvc := &php.Service{DB: database}

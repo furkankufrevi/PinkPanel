@@ -14,6 +14,7 @@ import (
 	"github.com/pinkpanel/pinkpanel/internal/core/dns"
 	"github.com/pinkpanel/pinkpanel/internal/core/domain"
 	"github.com/pinkpanel/pinkpanel/internal/core/php"
+	sslpkg "github.com/pinkpanel/pinkpanel/internal/core/ssl"
 	"github.com/pinkpanel/pinkpanel/internal/db"
 	tmpl "github.com/pinkpanel/pinkpanel/internal/template"
 )
@@ -23,6 +24,7 @@ type DomainHandler struct {
 	DB          *sql.DB
 	DomainSvc   *domain.Service
 	DNSSvc      *dns.Service
+	SSLSvc      *sslpkg.Service
 	AgentClient *agent.Client
 }
 
@@ -405,46 +407,16 @@ func (h *DomainHandler) Update(c *fiber.Ctx) error {
 		})
 	}
 
-	// Re-render and write NGINX vhost
-	vhostContent, err := tmpl.RenderNginxVhost(tmpl.NginxVhostData{
-		Domain:       d.Name,
-		DocumentRoot: d.DocumentRoot,
-		PHPVersion:   d.PHPVersion,
-	})
-	if err != nil {
+	// Re-render and write NGINX vhost (with SSL settings preserved)
+	if err := h.writeVhost(d); err != nil {
 		log.Printf("WARNING: failed to render vhost for %s: %v", d.Name, err)
-		return c.JSON(d)
-	}
-
-	configPath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", d.Name)
-	_, err = h.AgentClient.Call("file_write", map[string]interface{}{
-		"path":    configPath,
-		"content": vhostContent,
-		"mode":    "0644",
-	})
-	if err != nil {
-		log.Printf("WARNING: failed to write vhost config for %s: %v", d.Name, err)
-		return c.JSON(d)
-	}
-
-	enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", d.Name)
-	_, err = h.AgentClient.Call("file_write", map[string]interface{}{
-		"path":    enabledPath,
-		"content": vhostContent,
-		"mode":    "0644",
-	})
-	if err != nil {
-		log.Printf("WARNING: failed to write sites-enabled config for %s: %v", d.Name, err)
-	}
-
-	_, err = h.AgentClient.Call("nginx_test", nil)
-	if err != nil {
-		log.Printf("WARNING: nginx config test failed after updating %s: %v", d.Name, err)
-	}
-
-	_, err = h.AgentClient.Call("nginx_reload", nil)
-	if err != nil {
-		log.Printf("ERROR: nginx reload failed after updating %s: %v", d.Name, err)
+	} else {
+		if _, err := h.AgentClient.Call("nginx_test", nil); err != nil {
+			log.Printf("WARNING: nginx config test failed after updating %s: %v", d.Name, err)
+		}
+		if _, err := h.AgentClient.Call("nginx_reload", nil); err != nil {
+			log.Printf("ERROR: nginx reload failed after updating %s: %v", d.Name, err)
+		}
 	}
 
 	adminID, _ := c.Locals("admin_id").(int64)
@@ -624,37 +596,11 @@ func (h *DomainHandler) Activate(c *fiber.Ctx) error {
 		})
 	}
 
-	// Re-render normal vhost
-	vhostContent, err := tmpl.RenderNginxVhost(tmpl.NginxVhostData{
-		Domain:       d.Name,
-		DocumentRoot: d.DocumentRoot,
-		PHPVersion:   d.PHPVersion,
-	})
-	if err != nil {
+	// Re-render normal vhost (with SSL settings preserved)
+	if err := h.writeVhost(d); err != nil {
 		log.Printf("WARNING: failed to render vhost for %s: %v", d.Name, err)
 	} else {
-		configPath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", d.Name)
-		_, err = h.AgentClient.Call("file_write", map[string]interface{}{
-			"path":    configPath,
-			"content": vhostContent,
-			"mode":    "0644",
-		})
-		if err != nil {
-			log.Printf("WARNING: failed to write vhost config for %s: %v", d.Name, err)
-		}
-
-		enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", d.Name)
-		_, err = h.AgentClient.Call("file_write", map[string]interface{}{
-			"path":    enabledPath,
-			"content": vhostContent,
-			"mode":    "0644",
-		})
-		if err != nil {
-			log.Printf("WARNING: failed to write sites-enabled config for %s: %v", d.Name, err)
-		}
-
-		_, err = h.AgentClient.Call("nginx_reload", nil)
-		if err != nil {
+		if _, err := h.AgentClient.Call("nginx_reload", nil); err != nil {
 			log.Printf("ERROR: nginx reload failed after activating %s: %v", d.Name, err)
 		}
 	}
@@ -760,6 +706,11 @@ func (h *DomainHandler) Delete(c *fiber.Ctx) error {
 			"path": fmt.Sprintf("/etc/nginx/sites-available/%s.conf", vhostName),
 		})
 	}
+
+	// Remove redirect snippet
+	h.AgentClient.Call("file_delete", map[string]interface{}{
+		"path": fmt.Sprintf("/etc/nginx/snippets/redirects-%s.conf", d.Name),
+	})
 
 	// Remove SSL certificate directories (domain + mail subdomain)
 	for _, sslName := range []string{d.Name, "mail." + d.Name} {
@@ -934,6 +885,62 @@ func (h *DomainHandler) checkSystemHealth() []string {
 	return warnings
 }
 
+// buildVhostData constructs a full NginxVhostData for a domain, including SSL
+// settings if a certificate exists. This ensures vhost re-renders never lose
+// SSL, HSTS, ForceHTTPS, or ModSecurity state.
+func (h *DomainHandler) buildVhostData(d *domain.Domain) tmpl.NginxVhostData {
+	data := tmpl.NginxVhostData{
+		Domain:             d.Name,
+		DocumentRoot:       d.DocumentRoot,
+		PHPVersion:         d.PHPVersion,
+		ModSecurityEnabled: d.ModSecurityEnabled,
+	}
+
+	if h.SSLSvc != nil {
+		cert, err := h.SSLSvc.GetByDomainID(d.ID)
+		if err == nil && cert != nil {
+			data.SSLEnabled = true
+			data.SSLCertPath = cert.CertPath
+			data.SSLKeyPath = cert.KeyPath
+			if cert.ChainPath != nil {
+				data.SSLChainPath = *cert.ChainPath
+			}
+			data.ForceHTTPS = cert.ForceHTTPS
+			data.HTTP2 = true
+			data.HSTS = cert.HSTS
+			if cert.HSTS {
+				data.HSTSMaxAge = 31536000
+			}
+		}
+	}
+
+	return data
+}
+
+// writeVhost renders and writes the nginx vhost to both sites-available and sites-enabled.
+func (h *DomainHandler) writeVhost(d *domain.Domain) error {
+	vhostData := h.buildVhostData(d)
+	vhostContent, err := tmpl.RenderNginxVhost(vhostData)
+	if err != nil {
+		return fmt.Errorf("render vhost: %w", err)
+	}
+
+	for _, path := range []string{
+		fmt.Sprintf("/etc/nginx/sites-available/%s.conf", d.Name),
+		fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", d.Name),
+	} {
+		if _, err := h.AgentClient.Call("file_write", map[string]interface{}{
+			"path":    path,
+			"content": vhostContent,
+			"mode":    "0644",
+		}); err != nil {
+			log.Printf("WARNING: failed to write vhost to %s: %v", path, err)
+		}
+	}
+
+	return nil
+}
+
 // provisionDNSZone generates a BIND zone file from DNS records and registers
 // it in named.conf.local. All errors are logged but non-fatal.
 func provisionDNSZone(dnsSvc *dns.Service, agentClient *agent.Client, domainID int64, domainName string) {
@@ -1046,44 +1053,11 @@ func (h *DomainHandler) ToggleModSecurity(c *fiber.Ctx) error {
 		})
 	}
 
-	// Re-render NGINX vhost
-	vhostData := tmpl.NginxVhostData{
-		Domain:             d.Name,
-		DocumentRoot:       d.DocumentRoot,
-		PHPVersion:         d.PHPVersion,
-		ModSecurityEnabled: req.Enabled,
-	}
-
-	// Preserve SSL settings if present
-	var certPath, keyPath string
-	var chainPath *string
-	var forceHTTPS bool
-	err = h.DB.QueryRow(
-		"SELECT cert_path, key_path, chain_path, force_https FROM ssl_certificates WHERE domain_id = ?", domainID,
-	).Scan(&certPath, &keyPath, &chainPath, &forceHTTPS)
-	if err == nil {
-		vhostData.SSLEnabled = true
-		vhostData.SSLCertPath = certPath
-		vhostData.SSLKeyPath = keyPath
-		if chainPath != nil {
-			vhostData.SSLChainPath = *chainPath
-		}
-		vhostData.ForceHTTPS = forceHTTPS
-		vhostData.HTTP2 = true
-		vhostData.HSTS = true
-		vhostData.HSTSMaxAge = 31536000
-	}
-
-	vhostContent, err := tmpl.RenderNginxVhost(vhostData)
-	if err != nil {
+	// Re-render NGINX vhost (buildVhostData picks up SSL + ModSecurity from DB)
+	if err := h.writeVhost(d); err != nil {
 		log.Printf("WARNING: failed to render vhost for %s: %v", d.Name, err)
 		return c.JSON(fiber.Map{"status": "ok", "modsecurity_enabled": req.Enabled})
 	}
-
-	configPath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", d.Name)
-	enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", d.Name)
-	h.AgentClient.Call("file_write", map[string]any{"path": configPath, "content": vhostContent, "mode": "0644"})
-	h.AgentClient.Call("file_write", map[string]any{"path": enabledPath, "content": vhostContent, "mode": "0644"})
 
 	if _, err := h.AgentClient.Call("nginx_test", nil); err != nil {
 		log.Printf("WARNING: nginx config test failed after toggling ModSecurity for %s: %v", d.Name, err)
