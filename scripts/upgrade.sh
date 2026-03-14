@@ -929,6 +929,10 @@ $pass = htmlspecialchars($data['password'], ENT_QUOTES, 'UTF-8');
 </body></html>
 RCSIGNON
         chown www-data:www-data /usr/share/roundcube/signon.php
+        # Symlink into public docroot (nginx may serve from /var/lib/roundcube/public_html/)
+        if [[ -d /var/lib/roundcube/public_html ]] && [[ ! -e /var/lib/roundcube/public_html/signon.php ]]; then
+            ln -sf /usr/share/roundcube/signon.php /var/lib/roundcube/public_html/signon.php
+        fi
     fi
 
     # Always recreate NGINX config (fix paths on upgrade)
