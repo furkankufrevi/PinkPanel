@@ -10,7 +10,7 @@ import (
 	"github.com/pinkpanel/pinkpanel/internal/agent"
 )
 
-var version = "0.7.5-alpha"
+var version = "0.7.55-alpha"
 
 func main() {
 	socket := flag.String("socket", "", "Unix socket path")
