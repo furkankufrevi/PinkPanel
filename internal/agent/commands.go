@@ -2964,14 +2964,24 @@ func cmdGitClone(params json.RawMessage) (interface{}, error) {
 		return nil, fmt.Errorf("creating parent directory: %w", err)
 	}
 
-	args := []string{"clone"}
+	isSSH := strings.HasPrefix(p.URL, "git@") || strings.HasPrefix(p.URL, "ssh://")
+
+	args := []string{}
+	// For HTTPS URLs, prevent git from rewriting to SSH via insteadOf config
+	if !isSSH {
+		args = append(args, "-c", "url.ssh://git@github.com/.insteadOf=''",
+			"-c", "url.git@github.com:.insteadOf=''")
+	}
+	args = append(args, "clone")
 	if p.Branch != "" {
 		args = append(args, "--branch", p.Branch)
 	}
 	args = append(args, "--single-branch", p.URL, p.Path)
 
 	cmd := exec.Command("git", args...)
-	cmd.Env = append(os.Environ(), "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new")
+	if isSSH {
+		cmd.Env = append(os.Environ(), "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new")
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("git clone failed: %s", strings.TrimSpace(string(out)))
@@ -2996,13 +3006,20 @@ func cmdGitPull(params json.RawMessage) (interface{}, error) {
 		return nil, err
 	}
 
+	// Check if remote uses SSH to decide env
+	remoteOut, _ := exec.Command("git", "-C", p.Path, "remote", "get-url", "origin").Output()
+	remoteURL := strings.TrimSpace(string(remoteOut))
+	isSSH := strings.HasPrefix(remoteURL, "git@") || strings.HasPrefix(remoteURL, "ssh://")
+
 	args := []string{"-C", p.Path, "pull", "origin"}
 	if p.Branch != "" {
 		args = append(args, p.Branch)
 	}
 
 	cmd := exec.Command("git", args...)
-	cmd.Env = append(os.Environ(), "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new")
+	if isSSH {
+		cmd.Env = append(os.Environ(), "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new")
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("git pull failed: %s", strings.TrimSpace(string(out)))
