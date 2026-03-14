@@ -54,7 +54,6 @@ import {
   Package,
   Plus,
   Trash2,
-  RefreshCw,
   ExternalLink,
   CheckCircle2,
   XCircle,
@@ -63,7 +62,6 @@ import {
   ArrowUpCircle,
   Settings,
   Globe,
-  Database,
   Eye,
 } from "lucide-react";
 
