@@ -33,6 +33,9 @@ const nginxVhostTemplate = `server {
     server_name {{ .Domain }} www.{{ .Domain }};
     root {{ .DocumentRoot }};
 
+    # PinkPanel managed redirects
+    include /etc/nginx/snippets/redirects-{{ .Domain }}.conf;
+
     # Allow ACME challenge for Let's Encrypt
     location ^~ /.well-known/acme-challenge/ {
         allow all;
@@ -51,6 +54,9 @@ server {
     listen [::]:443 ssl{{ if .HTTP2 }} http2{{ end }};
     server_name {{ .Domain }} www.{{ .Domain }};
     root {{ .DocumentRoot }};
+
+    # PinkPanel managed redirects
+    include /etc/nginx/snippets/redirects-{{ .Domain }}.conf;
 
     ssl_certificate {{ .SSLCertPath }};
     ssl_certificate_key {{ .SSLKeyPath }};
@@ -156,6 +162,9 @@ server {
     listen [::]:443 ssl{{ if .HTTP2 }} http2{{ end }};
     server_name {{ .Domain }} www.{{ .Domain }};
     root {{ .DocumentRoot }};
+
+    # PinkPanel managed redirects
+    include /etc/nginx/snippets/redirects-{{ .Domain }}.conf;
 
     ssl_certificate {{ .SSLCertPath }};
     ssl_certificate_key {{ .SSLKeyPath }};

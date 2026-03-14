@@ -299,6 +299,14 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 			log.Printf("WARNING: failed to write sites-enabled config for %s: %v", d.Name, err)
 		}
 
+		// Create empty redirect snippet so nginx include doesn't fail
+		snippetPath := fmt.Sprintf("/etc/nginx/snippets/redirects-%s.conf", d.Name)
+		h.AgentClient.Call("file_write", map[string]interface{}{
+			"path":    snippetPath,
+			"content": "# PinkPanel managed redirects - do not edit manually\n",
+			"mode":    "0644",
+		})
+
 		// Test and reload NGINX
 		_, err = h.AgentClient.Call("nginx_test", nil)
 		if err != nil {

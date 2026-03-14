@@ -170,28 +170,29 @@ func (h *RedirectHandler) syncNginx(domainID int64) {
 		return
 	}
 
-	// Ensure snippet is included in the domain's vhost
-	vhostPath := fmt.Sprintf("/etc/nginx/sites-available/%s", dom.Name)
+	// Ensure snippet is included in ALL server blocks of the domain's vhost.
+	// SSL configs have multiple server blocks (HTTP redirect + HTTPS content);
+	// the include must be in every block so redirects work on both ports.
+	vhostPath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", dom.Name)
 	resp, err := h.AgentClient.Call("file_read", map[string]any{"path": vhostPath})
 	if err == nil {
 		if result, ok := resp.Result.(map[string]any); ok {
 			if vhostContent, ok := result["content"].(string); ok {
-				includeDirective := fmt.Sprintf("include %s;", snippetPath)
-				if !strings.Contains(vhostContent, includeDirective) {
-					// Insert include after the first "server {" line
-					vhostContent = strings.Replace(
-						vhostContent,
-						"server {",
-						fmt.Sprintf("server {\n    %s", includeDirective),
-						1,
-					)
-					if _, err := h.AgentClient.Call("file_write", map[string]any{
-						"path":    vhostPath,
-						"content": vhostContent,
-						"mode":    "0644",
-					}); err != nil {
-						log.Error().Err(err).Msg("redirect: failed to update vhost")
-					}
+				includeLine := fmt.Sprintf("    include %s;", snippetPath)
+				// Strip any existing include lines to avoid duplicates
+				vhostContent = strings.ReplaceAll(vhostContent, includeLine+"\n", "")
+				// Inject include after every "server {" so all blocks have it
+				vhostContent = strings.ReplaceAll(
+					vhostContent,
+					"server {",
+					"server {\n"+includeLine,
+				)
+				if _, err := h.AgentClient.Call("file_write", map[string]any{
+					"path":    vhostPath,
+					"content": vhostContent,
+					"mode":    "0644",
+				}); err != nil {
+					log.Error().Err(err).Msg("redirect: failed to update vhost")
 				}
 			}
 		}
