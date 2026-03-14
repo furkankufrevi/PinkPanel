@@ -1,24 +1,7 @@
 import { useMemo } from "react";
 import { useParams, useNavigate, useLocation, Outlet } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import {
-  ArrowLeft,
-  Globe,
-  LayoutGrid,
-  Network,
-  Shield,
-  Code,
-  FolderOpen,
-  HardDrive,
-  Upload,
-  Clock,
-  GitBranch,
-  ExternalLink,
-  Mail,
-  ScrollText,
-  Archive,
-  Settings,
-} from "lucide-react";
+import { ArrowLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -26,22 +9,27 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { getDomain } from "@/api/domains";
 
-const allTabs = [
-  { value: "overview", label: "Overview", icon: LayoutGrid },
-  { value: "dns", label: "DNS", icon: Globe },
-  { value: "ssl", label: "SSL", icon: Shield },
-  { value: "php", label: "PHP", icon: Code },
-  { value: "files", label: "Files", icon: FolderOpen },
-  { value: "databases", label: "Databases", icon: HardDrive },
-  { value: "ftp", label: "FTP", icon: Upload },
-  { value: "email", label: "Email", icon: Mail },
-  { value: "crons", label: "Cron Jobs", icon: Clock },
-  { value: "redirects", label: "Redirects", icon: ExternalLink },
-  { value: "git", label: "Git", icon: GitBranch },
-  { value: "logs", label: "Logs", icon: ScrollText },
-  { value: "backups", label: "Backups", icon: Archive },
-  { value: "settings", label: "Settings", icon: Settings },
+// Plesk-style: only 4 top-level tabs instead of 14
+const topTabs = [
+  { value: "overview", label: "Dashboard" },
+  { value: "dns", label: "Hosting & DNS" },
+  { value: "email", label: "Mail" },
+  { value: "settings", label: "Settings" },
 ];
+
+// Labels for sub-pages (shown in breadcrumb)
+const subPageLabels: Record<string, string> = {
+  files: "Files",
+  databases: "Databases",
+  ftp: "FTP",
+  backups: "Backups",
+  php: "PHP",
+  ssl: "SSL/TLS",
+  redirects: "Redirects",
+  crons: "Cron Jobs",
+  git: "Git",
+  logs: "Logs",
+};
 
 export function DomainDetailLayout() {
   const { id } = useParams<{ id: string }>();
@@ -67,18 +55,20 @@ export function DomainDetailLayout() {
   const hasSeparateDNS = domain?.separate_dns ?? false;
 
   const tabs = useMemo(() => {
-    return allTabs.filter((tab) => {
-      // Hide DNS tab for subdomains without separate DNS
+    return topTabs.filter((tab) => {
+      // Hide Hosting & DNS tab for subdomains without separate DNS
       if (tab.value === "dns" && isSubdomain && !hasSeparateDNS) return false;
       return true;
     });
   }, [isSubdomain, hasSeparateDNS]);
 
   const pathParts = location.pathname.split("/");
-  const activeTab = pathParts[3] || "overview";
+  const activeRoute = pathParts[3] || "overview";
+  const isTopTab = topTabs.some((t) => t.value === activeRoute);
+  const subPageLabel = subPageLabels[activeRoute];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center gap-3">
         <Button
@@ -93,52 +83,44 @@ export function DomainDetailLayout() {
           <Skeleton className="h-8 w-48" />
         ) : (
           <div className="flex items-center gap-3 min-w-0">
-            <div className="rounded-lg bg-pink-500/10 p-2">
-              {isSubdomain ? (
-                <Network className="h-5 w-5 text-pink-500" />
-              ) : (
-                <Globe className="h-5 w-5 text-pink-500" />
-              )}
-            </div>
-            <div className="min-w-0">
-              <h1 className="text-xl font-bold truncate">{domain?.name}</h1>
-              {isSubdomain && parentDomain && (
-                <p className="text-xs text-muted-foreground">
-                  Subdomain of{" "}
-                  <button
-                    className="text-pink-500 hover:underline"
-                    onClick={() => navigate(`/domains/${parentDomain.id}/overview`)}
-                  >
-                    {parentDomain.name}
-                  </button>
-                </p>
-              )}
-            </div>
+            <h1 className="text-xl font-bold truncate">{domain?.name}</h1>
             {domain && <StatusBadge status={domain.status} />}
             {isSubdomain && (
               <Badge variant="outline" className="text-xs">Subdomain</Badge>
+            )}
+            {isSubdomain && parentDomain && (
+              <span className="text-xs text-muted-foreground">
+                of{" "}
+                <button
+                  className="text-pink-500 hover:underline"
+                  onClick={() => navigate(`/domains/${parentDomain.id}/overview`)}
+                >
+                  {parentDomain.name}
+                </button>
+              </span>
             )}
           </div>
         )}
       </div>
 
-      {/* Tab navigation */}
-      <div className="-mx-1 overflow-x-auto pb-px">
-        <nav className="flex gap-1 px-1 min-w-max">
+      {/* Top-level tabs (Plesk-style: only 4) */}
+      <div className="border-b border-border">
+        <nav className="flex gap-6">
           {tabs.map((tab) => {
-            const isActive = activeTab === tab.value;
+            const isActive =
+              activeRoute === tab.value ||
+              (tab.value === "overview" && !isTopTab);
             return (
               <button
                 key={tab.value}
                 onClick={() => navigate(`/domains/${id}/${tab.value}`)}
                 className={cn(
-                  "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors whitespace-nowrap",
+                  "pb-2.5 text-sm font-medium border-b-2 transition-colors",
                   isActive
-                    ? "bg-pink-500/10 text-pink-500"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                    ? "border-pink-500 text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
                 )}
               >
-                <tab.icon className="h-3.5 w-3.5" />
                 {tab.label}
               </button>
             );
@@ -146,8 +128,38 @@ export function DomainDetailLayout() {
         </nav>
       </div>
 
+      {/* Breadcrumb for sub-pages */}
+      {!isTopTab && subPageLabel && (
+        <div className="flex items-center gap-1.5 text-sm">
+          <button
+            onClick={() => navigate(`/domains/${id}/overview`)}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Dashboard
+          </button>
+          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="font-medium">{subPageLabel}</span>
+        </div>
+      )}
+
       {/* Content */}
       <Outlet context={{ domain, isLoading }} />
+
+      {/* Bottom info bar */}
+      {domain && (
+        <div className="border-t border-border pt-3 mt-6 flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted-foreground">
+          <span>
+            Website at{" "}
+            <code className="text-foreground font-mono">
+              {domain.document_root}
+            </code>
+          </span>
+          <span>
+            Created{" "}
+            {new Date(domain.created_at).toLocaleDateString()}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
