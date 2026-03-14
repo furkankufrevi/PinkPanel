@@ -868,6 +868,7 @@ SPAMILTER
     chown clamav:postfix /var/spool/postfix/clamav
 
     cat > /etc/clamav/clamav-milter.conf <<'CMILTER'
+PidFile /var/run/clamav/clamav-milter.pid
 MilterSocket /var/spool/postfix/clamav/clamav-milter.sock
 MilterSocketMode 660
 MilterSocketGroup postfix

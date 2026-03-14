@@ -796,6 +796,7 @@ SPAMILTER
 
     if [[ ! -f /etc/clamav/clamav-milter.conf ]] || ! grep -q "/var/spool/postfix/clamav/" /etc/clamav/clamav-milter.conf 2>/dev/null; then
         cat > /etc/clamav/clamav-milter.conf <<'CMILTER'
+PidFile /var/run/clamav/clamav-milter.pid
 MilterSocket /var/spool/postfix/clamav/clamav-milter.sock
 MilterSocketMode 660
 MilterSocketGroup postfix
@@ -1295,6 +1296,7 @@ fix_clamav_milter_socket() {
 
     # Force-write correct config
     cat > /etc/clamav/clamav-milter.conf <<'CMILTER'
+PidFile /var/run/clamav/clamav-milter.pid
 MilterSocket /var/spool/postfix/clamav/clamav-milter.sock
 MilterSocketMode 660
 MilterSocketGroup postfix

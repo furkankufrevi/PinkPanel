@@ -2649,7 +2649,8 @@ func cmdClamAVConfigure(params json.RawMessage) (interface{}, error) {
 		os.MkdirAll("/var/spool/postfix/clamav", 0755)
 		exec.Command("chown", "clamav:postfix", "/var/spool/postfix/clamav").Run()
 
-		milterConf := `MilterSocket /var/spool/postfix/clamav/clamav-milter.sock
+		milterConf := `PidFile /var/run/clamav/clamav-milter.pid
+MilterSocket /var/spool/postfix/clamav/clamav-milter.sock
 MilterSocketMode 660
 MilterSocketGroup postfix
 FixStaleSocket true
