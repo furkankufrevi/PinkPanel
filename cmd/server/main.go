@@ -43,7 +43,7 @@ import (
 //go:embed all:static
 var embeddedFiles embed.FS
 
-var version = "0.8.5-alpha"
+var version = "0.8.6-alpha"
 
 func main() {
 	// Parse flags
@@ -179,6 +179,7 @@ func main() {
 		Email:       "admin@localhost", // will be updated from DB settings
 		AgentClient: agentClient,
 		DNSSvc:      dnsSvc,
+		DomainSvc:   domainSvc,
 	}
 	// Try to load admin email from DB for ACME
 	var adminEmail string

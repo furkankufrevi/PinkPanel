@@ -2,6 +2,7 @@ package ssl
 
 import (
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/pinkpanel/pinkpanel/internal/agent"
 	"github.com/pinkpanel/pinkpanel/internal/core/dns"
+	"github.com/pinkpanel/pinkpanel/internal/core/domain"
 	tmpl "github.com/pinkpanel/pinkpanel/internal/template"
 )
 
@@ -16,6 +18,7 @@ import (
 // using PinkPanel's own BIND DNS server for DNS-01 challenges (needed for wildcards).
 type bindDNS01Provider struct {
 	dnsSvc      *dns.Service
+	domainSvc   *domain.Service
 	agentClient *agent.Client
 	domainID    int64
 	domainName  string
@@ -100,6 +103,38 @@ func (p *bindDNS01Provider) reloadZone() error {
 		zoneRecords = append(zoneRecords, zr)
 	}
 
+	// Include A/AAAA records for subdomains with separate_dns=0
+	if p.domainSvc != nil {
+		children, err := p.domainSvc.GetChildren(p.domainID)
+		if err == nil {
+			serverIP := getProviderServerIP()
+			serverIPv6 := getProviderServerIPv6()
+			existing := make(map[string]bool)
+			for _, zr := range zoneRecords {
+				existing[zr.Name+"/"+zr.Type] = true
+			}
+			for _, child := range children {
+				if child.SeparateDNS {
+					continue
+				}
+				prefix := extractPrefix(child.Name, p.domainName)
+				if prefix == "" || prefix == child.Name {
+					continue
+				}
+				if !existing[prefix+"/A"] {
+					zoneRecords = append(zoneRecords, tmpl.ZoneRecord{
+						Name: prefix, TTL: 3600, Class: "IN", Type: "A", Value: serverIP,
+					})
+				}
+				if serverIPv6 != "" && !existing[prefix+"/AAAA"] {
+					zoneRecords = append(zoneRecords, tmpl.ZoneRecord{
+						Name: prefix, TTL: 3600, Class: "IN", Type: "AAAA", Value: serverIPv6,
+					})
+				}
+			}
+		}
+	}
+
 	zoneContent, err := tmpl.RenderZoneFile(tmpl.ZoneFileData{
 		Domain:  p.domainName,
 		Records: zoneRecords,
@@ -126,4 +161,52 @@ func (p *bindDNS01Provider) reloadZone() error {
 	}
 
 	return nil
+}
+
+// extractPrefix extracts subdomain prefix from FQDN given parent name.
+func extractPrefix(fqdn, parentName string) string {
+	if len(fqdn) > len(parentName)+1 {
+		return fqdn[:len(fqdn)-len(parentName)-1]
+	}
+	return fqdn
+}
+
+// getProviderServerIP returns the server's primary public IPv4 address.
+func getProviderServerIP() string {
+	addrs, _ := net.InterfaceAddrs()
+	var fallback string
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok || ipNet.IP.IsLoopback() || ipNet.IP.To4() == nil {
+			continue
+		}
+		if !ipNet.IP.IsPrivate() {
+			return ipNet.IP.String()
+		}
+		if fallback == "" {
+			fallback = ipNet.IP.String()
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return "127.0.0.1"
+}
+
+// getProviderServerIPv6 returns the server's primary public IPv6 address.
+func getProviderServerIPv6() string {
+	addrs, _ := net.InterfaceAddrs()
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok || ipNet.IP.IsLoopback() || ipNet.IP.To4() != nil {
+			continue
+		}
+		if ipNet.IP.IsLinkLocalUnicast() || ipNet.IP.IsLinkLocalMulticast() {
+			continue
+		}
+		if !ipNet.IP.IsPrivate() {
+			return ipNet.IP.String()
+		}
+	}
+	return ""
 }

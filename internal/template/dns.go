@@ -91,17 +91,34 @@ func renderRecord(r ZoneRecord) string {
 		return fmt.Sprintf("%s\t%d\tIN\tSRV\t%d\t%s",
 			r.Name, r.TTL, r.Priority, r.Value)
 	case "TXT":
-		return fmt.Sprintf("%s\t%d\tIN\tTXT\t\"%s\"",
-			r.Name, r.TTL, escapeTXT(r.Value))
+		return fmt.Sprintf("%s\t%d\tIN\tTXT\t%s",
+			r.Name, r.TTL, formatTXT(r.Value))
 	default:
 		return fmt.Sprintf("%s\t%d\tIN\t%s\t%s",
 			r.Name, r.TTL, r.Type, r.Value)
 	}
 }
 
-// escapeTXT escapes special characters in TXT record values for BIND.
-func escapeTXT(s string) string {
+// formatTXT formats a TXT record value for BIND zone files.
+// BIND limits each quoted string to 255 characters, so longer values
+// (e.g. DKIM keys) must be split into multiple quoted chunks.
+func formatTXT(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "\"", "\\\"")
-	return s
+
+	if len(s) <= 255 {
+		return fmt.Sprintf("\"%s\"", s)
+	}
+
+	// Split into 255-char chunks wrapped in parentheses
+	var parts []string
+	for len(s) > 0 {
+		end := 255
+		if end > len(s) {
+			end = len(s)
+		}
+		parts = append(parts, fmt.Sprintf("\"%s\"", s[:end]))
+		s = s[end:]
+	}
+	return "( " + strings.Join(parts, " ") + " )"
 }

@@ -22,6 +22,7 @@ import (
 
 	"github.com/pinkpanel/pinkpanel/internal/agent"
 	"github.com/pinkpanel/pinkpanel/internal/core/dns"
+	"github.com/pinkpanel/pinkpanel/internal/core/domain"
 )
 
 const (
@@ -47,6 +48,7 @@ type ACMEService struct {
 	Staging     bool // use staging server for testing
 	AgentClient *agent.Client
 	DNSSvc      *dns.Service
+	DomainSvc   *domain.Service
 }
 
 // IssueCertificate obtains a Let's Encrypt certificate for the given domains.
@@ -161,6 +163,7 @@ func (a *ACMEService) IssueCertificateDNS01(domains []string, domainID int64, do
 	// Use DNS-01 challenge with BIND provider
 	provider := &bindDNS01Provider{
 		dnsSvc:      a.DNSSvc,
+		domainSvc:   a.DomainSvc,
 		agentClient: a.AgentClient,
 		domainID:    domainID,
 		domainName:  domainName,
