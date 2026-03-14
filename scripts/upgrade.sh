@@ -1096,128 +1096,182 @@ fix_sites_enabled_symlinks() {
     done
 }
 
-# ── Fix Postfix & Dovecot TLS to use mail.<domain> certificate ──
+# ── Fix Postfix & Dovecot TLS: multi-domain SNI from all mail.* certs ──
 fix_mail_tls_certs() {
-    # Find the primary domain from Postfix's myhostname
-    local mail_domain
-    mail_domain=$(postconf -h mydomain 2>/dev/null || true)
-    [[ -z "$mail_domain" ]] && return
+    local ssl_base="/usr/local/pinkpanel/data/ssl"
+    [[ -d "$ssl_base" ]] || return
 
-    local mail_host="mail.${mail_domain}"
-    local ssl_dir="/usr/local/pinkpanel/data/ssl/${mail_host}"
-    local cert_path="${ssl_dir}/fullchain.pem"
-    local key_path="${ssl_dir}/key.pem"
+    # Collect all mail.* domains that have SSL certs
+    local -a mail_domains=()
+    for dir in "$ssl_base"/mail.*/; do
+        [[ -d "$dir" ]] || continue
+        local name
+        name=$(basename "$dir")
+        local cert_path="${dir}cert.pem"
+        local key_path="${dir}key.pem"
+        [[ -f "$key_path" ]] || continue
+        # Need either cert.pem or fullchain.pem
+        [[ -f "$cert_path" ]] || [[ -f "${dir}fullchain.pem" ]] || continue
 
-    # Build fullchain from cert + chain if it doesn't exist yet
-    if [[ ! -f "$cert_path" ]] && [[ -f "${ssl_dir}/cert.pem" ]]; then
-        cat "${ssl_dir}/cert.pem" > "$cert_path"
-        [[ -f "${ssl_dir}/chain.pem" ]] && cat "${ssl_dir}/chain.pem" >> "$cert_path"
-    fi
+        # Build fullchain if missing
+        if [[ ! -f "${dir}fullchain.pem" ]]; then
+            cat "$cert_path" > "${dir}fullchain.pem"
+            [[ -f "${dir}chain.pem" ]] && cat "${dir}chain.pem" >> "${dir}fullchain.pem"
+        fi
 
-    # Only fix if mail.<domain> cert exists
-    if [[ ! -f "$cert_path" ]] || [[ ! -f "$key_path" ]]; then
-        warn "No SSL certificate found for ${mail_host} — skipping TLS cert fix"
-        return
-    fi
+        mail_domains+=("$name")
+    done
 
-    # Check if Postfix already points to the right cert
+    [[ ${#mail_domains[@]} -gt 0 ]] || return
+
+    local default="${mail_domains[0]}"
+    local default_fc="${ssl_base}/${default}/fullchain.pem"
+    local default_key="${ssl_base}/${default}/key.pem"
+
+    # Check if already configured correctly (SNI map exists and default cert matches)
     local current_cert
     current_cert=$(postconf -h smtpd_tls_cert_file 2>/dev/null || true)
-    if [[ "$current_cert" == "$cert_path" ]]; then
-        return  # already correct
+    local current_sni
+    current_sni=$(postconf -h tls_server_sni_maps 2>/dev/null || true)
+    if [[ "$current_cert" == "$default_fc" ]] && [[ "$current_sni" == "hash:/etc/postfix/sni_maps" ]]; then
+        # Check if sni_maps has all domains
+        local needs_update=false
+        for md in "${mail_domains[@]}"; do
+            if ! grep -q "^${md} " /etc/postfix/sni_maps 2>/dev/null; then
+                needs_update=true
+                break
+            fi
+        done
+        [[ "$needs_update" == "false" ]] && return
     fi
 
-    log "Fixing Postfix TLS certs → ${mail_host}..."
-    postconf -e "smtpd_tls_cert_file=${cert_path}" 2>/dev/null || true
-    postconf -e "smtpd_tls_key_file=${key_path}" 2>/dev/null || true
+    log "Configuring multi-domain mail TLS (${#mail_domains[@]} domain(s))..."
+
+    # ── Postfix: default cert + SNI map ──
+    postconf -e "smtpd_tls_cert_file=${default_fc}" 2>/dev/null || true
+    postconf -e "smtpd_tls_key_file=${default_key}" 2>/dev/null || true
     postconf -e "smtpd_tls_security_level=may" 2>/dev/null || true
     postconf -e "smtp_tls_security_level=may" 2>/dev/null || true
-    systemctl reload postfix > /dev/null 2>&1 || true
+    postconf -e "tls_server_sni_maps=hash:/etc/postfix/sni_maps" 2>/dev/null || true
 
-    log "Fixing Dovecot TLS certs → ${mail_host}..."
+    # Write SNI map
+    : > /etc/postfix/sni_maps
+    for md in "${mail_domains[@]}"; do
+        echo "${md} ${ssl_base}/${md}/fullchain.pem ${ssl_base}/${md}/key.pem" >> /etc/postfix/sni_maps
+    done
+    postmap -F hash:/etc/postfix/sni_maps 2>/dev/null || true
+
+    # ── Dovecot: default cert + local_name SNI blocks ──
     cat > /etc/dovecot/conf.d/10-ssl.conf <<DOVESSL
 ssl = required
-ssl_cert = <${cert_path}
-ssl_key = <${key_path}
+ssl_cert = <${default_fc}
+ssl_key = <${default_key}
 ssl_min_protocol = TLSv1.2
 DOVESSL
+
+    for md in "${mail_domains[@]}"; do
+        cat >> /etc/dovecot/conf.d/10-ssl.conf <<DOVESNI
+
+local_name ${md} {
+  ssl_cert = <${ssl_base}/${md}/fullchain.pem
+  ssl_key = <${ssl_base}/${md}/key.pem
+}
+DOVESNI
+    done
+
+    systemctl reload postfix > /dev/null 2>&1 || true
     systemctl reload dovecot > /dev/null 2>&1 || true
 
-    log "Mail TLS certs updated to ${mail_host}"
+    log "Mail TLS configured for: ${mail_domains[*]}"
 }
 
-# ── Ensure DKIM DNS record exists in zone ──
-fix_dkim_dns_record() {
-    local mail_domain
-    mail_domain=$(postconf -h mydomain 2>/dev/null || true)
-    [[ -z "$mail_domain" ]] && return
+# ── Ensure DKIM DNS records exist for all email-enabled domains ──
+fix_dkim_dns_records() {
+    local dkim_base="/etc/opendkim/keys"
+    [[ -d "$dkim_base" ]] || return
 
-    local dkim_key_file="/etc/opendkim/keys/${mail_domain}/mail.txt"
-    [[ -f "$dkim_key_file" ]] || return
+    for key_dir in "$dkim_base"/*/; do
+        [[ -d "$key_dir" ]] || continue
+        local domain
+        domain=$(basename "$key_dir")
+        local dkim_key_file="${key_dir}mail.txt"
+        [[ -f "$dkim_key_file" ]] || continue
 
-    local zone_file="/etc/bind/zones/db.${mail_domain}"
-    [[ -f "$zone_file" ]] || return
+        local zone_file="/etc/bind/zones/db.${domain}"
+        [[ -f "$zone_file" ]] || continue
 
-    # Check if DKIM record already in zone
-    if grep -q "_domainkey" "$zone_file" 2>/dev/null; then
-        return  # already present
-    fi
+        # Skip if DKIM record already present in zone
+        if grep -q "_domainkey" "$zone_file" 2>/dev/null; then
+            continue
+        fi
 
-    log "Injecting DKIM record into ${mail_domain} zone..."
+        log "Injecting DKIM record into ${domain} zone..."
 
-    # Extract the DKIM public key value from the key file
-    # mail.txt format: mail._domainkey IN TXT ( "v=DKIM1; ..." "..." )
-    local dkim_value
-    dkim_value=$(grep -oP '"[^"]*"' "$dkim_key_file" | tr -d '\n"' | sed 's/[[:space:]]\+//g')
+        # Extract the DKIM public key value (concatenate all quoted strings)
+        local dkim_value
+        dkim_value=$(grep -oP '"[^"]*"' "$dkim_key_file" | tr -d '\n"' | sed 's/[[:space:]]\+//g')
 
-    if [[ -z "$dkim_value" ]]; then
-        warn "Could not parse DKIM key from ${dkim_key_file}"
-        return
-    fi
+        if [[ -z "$dkim_value" ]]; then
+            warn "Could not parse DKIM key from ${dkim_key_file}"
+            continue
+        fi
 
-    # Split into 255-char chunks for BIND TXT record compliance
-    local txt_parts=""
-    local remaining="$dkim_value"
-    while [[ ${#remaining} -gt 0 ]]; do
-        local chunk="${remaining:0:255}"
-        remaining="${remaining:255}"
-        if [[ -n "$txt_parts" ]]; then
-            txt_parts="${txt_parts} \"${chunk}\""
+        # Split into 255-char chunks for BIND TXT record compliance
+        local txt_parts=""
+        local remaining="$dkim_value"
+        while [[ ${#remaining} -gt 0 ]]; do
+            local chunk="${remaining:0:255}"
+            remaining="${remaining:255}"
+            if [[ -n "$txt_parts" ]]; then
+                txt_parts="${txt_parts} \"${chunk}\""
+            else
+                txt_parts="\"${chunk}\""
+            fi
+        done
+
+        # Count chunks to decide format
+        local chunk_count
+        chunk_count=$(echo "$txt_parts" | grep -o '"' | wc -l)
+        chunk_count=$((chunk_count / 2))
+
+        # Increment SOA serial
+        local current_serial
+        current_serial=$(grep -oP '\d{10}' "$zone_file" | head -1)
+        if [[ -n "$current_serial" ]]; then
+            local new_serial=$((current_serial + 1))
+            sed -i "s/${current_serial}/${new_serial}/" "$zone_file"
+        fi
+
+        # Append DKIM record to zone file
+        if [[ $chunk_count -gt 1 ]]; then
+            echo "mail._domainkey  3600  IN  TXT  ( ${txt_parts} )" >> "$zone_file"
         else
-            txt_parts="\"${chunk}\""
+            echo "mail._domainkey  3600  IN  TXT  ${txt_parts}" >> "$zone_file"
+        fi
+
+        # Reload BIND zone
+        if named-checkzone "$domain" "$zone_file" > /dev/null 2>&1; then
+            rndc reload "$domain" > /dev/null 2>&1 || true
+            log "DKIM record added and zone reloaded for ${domain}"
+        else
+            warn "Zone check failed after adding DKIM for ${domain} — reverting"
+            sed -i '$ d' "$zone_file"
+            [[ -n "$current_serial" ]] && sed -i "s/${new_serial}/${current_serial}/" "$zone_file"
+        fi
+
+        # Also ensure OpenDKIM tables have this domain
+        local key_entry="mail._domainkey.${domain} ${domain}:mail:/etc/opendkim/keys/${domain}/mail.private"
+        local sign_entry="*@${domain} mail._domainkey.${domain}"
+        if ! grep -q "$domain" /etc/opendkim/key.table 2>/dev/null; then
+            echo "$key_entry" >> /etc/opendkim/key.table
+        fi
+        if ! grep -q "$domain" /etc/opendkim/signing.table 2>/dev/null; then
+            echo "$sign_entry" >> /etc/opendkim/signing.table
         fi
     done
 
-    # Count chunks to decide format
-    local chunk_count
-    chunk_count=$(echo "$txt_parts" | grep -o '"' | wc -l)
-    chunk_count=$((chunk_count / 2))
-
-    # Increment SOA serial
-    local current_serial
-    current_serial=$(grep -oP '\d{10}' "$zone_file" | head -1)
-    if [[ -n "$current_serial" ]]; then
-        local new_serial=$((current_serial + 1))
-        sed -i "s/${current_serial}/${new_serial}/" "$zone_file"
-    fi
-
-    # Append DKIM record to zone file
-    if [[ $chunk_count -gt 1 ]]; then
-        echo "mail._domainkey  3600  IN  TXT  ( ${txt_parts} )" >> "$zone_file"
-    else
-        echo "mail._domainkey  3600  IN  TXT  ${txt_parts}" >> "$zone_file"
-    fi
-
-    # Reload BIND zone
-    if named-checkzone "$mail_domain" "$zone_file" > /dev/null 2>&1; then
-        rndc reload "$mail_domain" > /dev/null 2>&1 || true
-        log "DKIM record added and zone reloaded for ${mail_domain}"
-    else
-        warn "Zone check failed after adding DKIM — reverting"
-        # Revert: remove the last line and restore serial
-        sed -i '$ d' "$zone_file"
-        [[ -n "$current_serial" ]] && sed -i "s/${new_serial}/${current_serial}/" "$zone_file"
-    fi
+    # Reload OpenDKIM if we touched tables
+    systemctl reload opendkim > /dev/null 2>&1 || true
 }
 
 # ── Ensure ClamAV milter socket is actually created ──
@@ -1239,10 +1293,8 @@ fix_clamav_milter_socket() {
     chown clamav:postfix /var/spool/postfix/clamav
     chmod 755 /var/spool/postfix/clamav
 
-    # Ensure config points to correct socket path
-    if [[ -f /etc/clamav/clamav-milter.conf ]]; then
-        if ! grep -q "/var/spool/postfix/clamav/" /etc/clamav/clamav-milter.conf 2>/dev/null; then
-            cat > /etc/clamav/clamav-milter.conf <<'CMILTER'
+    # Force-write correct config
+    cat > /etc/clamav/clamav-milter.conf <<'CMILTER'
 MilterSocket /var/spool/postfix/clamav/clamav-milter.sock
 MilterSocketMode 660
 MilterSocketGroup postfix
@@ -1253,13 +1305,11 @@ OnInfected Reject
 LogInfected Basic
 LogClean Off
 CMILTER
-        fi
-    fi
 
     # Add clamav user to postfix group so it can write to the socket dir
     usermod -aG postfix clamav 2>/dev/null || true
 
-    # Ensure clamd is running first
+    # Ensure clamd is running first (milter needs it)
     if ! systemctl is-active --quiet clamav-daemon; then
         systemctl restart clamav-daemon > /dev/null 2>&1 || true
         local retries=0
@@ -1269,7 +1319,7 @@ CMILTER
         done
     fi
 
-    # Restart milter (not just enable — force it to re-create the socket)
+    # Restart milter (force re-create socket)
     systemctl restart clamav-milter > /dev/null 2>&1 || true
 
     # Wait for the socket to appear
@@ -1298,7 +1348,7 @@ setup_spam_antivirus
 setup_roundcube
 fix_sites_enabled_symlinks
 fix_mail_tls_certs
-fix_dkim_dns_record
+fix_dkim_dns_records
 fix_clamav_milter_socket
 
 # ── Run version-specific migrations ────────

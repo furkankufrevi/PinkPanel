@@ -2906,39 +2906,126 @@ func cmdEmailConfigureSSL(params json.RawMessage) (interface{}, error) {
 		return nil, fmt.Errorf("writing fullchain: %w", err)
 	}
 
-	// Configure Postfix TLS
-	postfixCmds := [][]string{
-		{"postconf", "-e", fmt.Sprintf("smtpd_tls_cert_file=%s", fullchainPath)},
-		{"postconf", "-e", fmt.Sprintf("smtpd_tls_key_file=%s", keyPath)},
-		{"postconf", "-e", "smtpd_tls_security_level=may"},
-		{"postconf", "-e", "smtp_tls_security_level=may"},
+	// Rebuild multi-domain mail SSL config (scans all mail.* cert dirs)
+	if err := rebuildMailSSL(); err != nil {
+		return nil, err
 	}
-	for _, args := range postfixCmds {
-		cmd := exec.Command(args[0], args[1:]...)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("postconf failed: %s: %w", strings.TrimSpace(string(out)), err)
-		}
-	}
-
-	// Configure Dovecot SSL
-	dovecotSSLConf := fmt.Sprintf(`ssl = required
-ssl_cert = <%s
-ssl_key = <%s
-ssl_min_protocol = TLSv1.2
-`, fullchainPath, keyPath)
-	if err := os.WriteFile("/etc/dovecot/conf.d/10-ssl.conf", []byte(dovecotSSLConf), 0644); err != nil {
-		return nil, fmt.Errorf("writing dovecot ssl config: %w", err)
-	}
-
-	// Reload services
-	exec.Command("systemctl", "reload", "postfix").Run()
-	exec.Command("systemctl", "reload", "dovecot").Run()
 
 	return map[string]string{
 		"status":    "ok",
 		"cert_path": fullchainPath,
 		"key_path":  keyPath,
 	}, nil
+}
+
+// rebuildMailSSL scans all mail.* SSL cert directories and rebuilds:
+// - Postfix: default cert (first domain) + tls_server_sni_maps for per-domain SNI
+// - Dovecot: default cert + local_name blocks for per-domain SNI
+func rebuildMailSSL() error {
+	sslBase := "/usr/local/pinkpanel/data/ssl"
+
+	// Find all mail.* directories that have certs
+	type mailCert struct {
+		domain    string // e.g. "mail.example.com"
+		fullchain string
+		key       string
+	}
+	var certs []mailCert
+
+	entries, err := os.ReadDir(sslBase)
+	if err != nil {
+		return fmt.Errorf("reading ssl dir: %w", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "mail.") {
+			continue
+		}
+		dir := filepath.Join(sslBase, e.Name())
+		fc := filepath.Join(dir, "fullchain.pem")
+		key := filepath.Join(dir, "key.pem")
+		cert := filepath.Join(dir, "cert.pem")
+		// Build fullchain if missing but cert exists
+		if _, err := os.Stat(fc); err != nil {
+			if _, err2 := os.Stat(cert); err2 != nil {
+				continue // no cert at all
+			}
+			cData, _ := os.ReadFile(cert)
+			full := string(cData)
+			if chain, err3 := os.ReadFile(filepath.Join(dir, "chain.pem")); err3 == nil {
+				full += "\n" + string(chain)
+			}
+			os.WriteFile(fc, []byte(full), 0644)
+		}
+		if _, err := os.Stat(key); err != nil {
+			continue // no key
+		}
+		certs = append(certs, mailCert{domain: e.Name(), fullchain: fc, key: key})
+	}
+
+	if len(certs) == 0 {
+		return nil // no mail certs, nothing to configure
+	}
+
+	// Use first cert as default
+	defaultCert := certs[0]
+
+	// ── Postfix: default cert + SNI map ──
+	postfixCmds := [][]string{
+		{"postconf", "-e", fmt.Sprintf("smtpd_tls_cert_file=%s", defaultCert.fullchain)},
+		{"postconf", "-e", fmt.Sprintf("smtpd_tls_key_file=%s", defaultCert.key)},
+		{"postconf", "-e", "smtpd_tls_security_level=may"},
+		{"postconf", "-e", "smtp_tls_security_level=may"},
+		{"postconf", "-e", "tls_server_sni_maps=hash:/etc/postfix/sni_maps"},
+	}
+	for _, args := range postfixCmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("postconf failed: %s: %w", strings.TrimSpace(string(out)), err)
+		}
+	}
+
+	// Write SNI map: one line per mail domain
+	var sniLines []string
+	for _, mc := range certs {
+		sniLines = append(sniLines, fmt.Sprintf("%s %s %s", mc.domain, mc.fullchain, mc.key))
+	}
+	sniContent := strings.Join(sniLines, "\n") + "\n"
+	if err := os.WriteFile("/etc/postfix/sni_maps", []byte(sniContent), 0644); err != nil {
+		return fmt.Errorf("writing sni_maps: %w", err)
+	}
+
+	// Build the hash db
+	if out, err := exec.Command("postmap", "-F", "hash:/etc/postfix/sni_maps").CombinedOutput(); err != nil {
+		return fmt.Errorf("postmap sni_maps: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	// ── Dovecot: default cert + local_name SNI blocks ──
+	var dovecotConf strings.Builder
+	dovecotConf.WriteString(fmt.Sprintf(`ssl = required
+ssl_cert = <%s
+ssl_key = <%s
+ssl_min_protocol = TLSv1.2
+`, defaultCert.fullchain, defaultCert.key))
+
+	// Add local_name blocks for each mail domain
+	for _, mc := range certs {
+		dovecotConf.WriteString(fmt.Sprintf(`
+local_name %s {
+  ssl_cert = <%s
+  ssl_key = <%s
+}
+`, mc.domain, mc.fullchain, mc.key))
+	}
+
+	if err := os.WriteFile("/etc/dovecot/conf.d/10-ssl.conf", []byte(dovecotConf.String()), 0644); err != nil {
+		return fmt.Errorf("writing dovecot ssl config: %w", err)
+	}
+
+	// Reload services
+	exec.Command("systemctl", "reload", "postfix").Run()
+	exec.Command("systemctl", "reload", "dovecot").Run()
+
+	return nil
 }
 
 func cmdEmailSSLStatus(params json.RawMessage) (interface{}, error) {
