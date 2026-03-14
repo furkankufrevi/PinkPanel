@@ -173,7 +173,9 @@ func (h *RedirectHandler) syncNginx(domainID int64) {
 	// Ensure snippet is included in ALL server blocks of the domain's vhost.
 	// SSL configs have multiple server blocks (HTTP redirect + HTTPS content);
 	// the include must be in every block so redirects work on both ports.
+	// NOTE: sites-enabled is a copy (not a symlink), so we must update both.
 	vhostPath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", dom.Name)
+	enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", dom.Name)
 	resp, err := h.AgentClient.Call("file_read", map[string]any{"path": vhostPath})
 	if err == nil {
 		if result, ok := resp.Result.(map[string]any); ok {
@@ -187,12 +189,15 @@ func (h *RedirectHandler) syncNginx(domainID int64) {
 					"server {",
 					"server {\n"+includeLine,
 				)
-				if _, err := h.AgentClient.Call("file_write", map[string]any{
-					"path":    vhostPath,
-					"content": vhostContent,
-					"mode":    "0644",
-				}); err != nil {
-					log.Error().Err(err).Msg("redirect: failed to update vhost")
+				// Write to both sites-available and sites-enabled
+				for _, path := range []string{vhostPath, enabledPath} {
+					if _, err := h.AgentClient.Call("file_write", map[string]any{
+						"path":    path,
+						"content": vhostContent,
+						"mode":    "0644",
+					}); err != nil {
+						log.Error().Err(err).Str("path", path).Msg("redirect: failed to update vhost")
+					}
 				}
 			}
 		}
