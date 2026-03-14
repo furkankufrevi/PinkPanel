@@ -23,6 +23,7 @@ const DomainFiles = lazy(() => import("@/pages/domains/detail/files").then((m) =
 const DomainDatabases = lazy(() => import("@/pages/domains/detail/databases").then((m) => ({ default: m.DomainDatabases })));
 const DomainFTP = lazy(() => import("@/pages/domains/detail/ftp").then((m) => ({ default: m.DomainFTP })));
 const DomainEmail = lazy(() => import("@/pages/domains/detail/email").then((m) => ({ default: m.DomainEmail })));
+const DomainCrons = lazy(() => import("@/pages/domains/detail/crons").then((m) => ({ default: m.DomainCrons })));
 const DomainGit = lazy(() => import("@/pages/domains/detail/git").then((m) => ({ default: m.DomainGit })));
 const DomainBackups = lazy(() => import("@/pages/domains/detail/backups").then((m) => ({ default: m.DomainBackups })));
 const DomainLogs = lazy(() => import("@/pages/domains/detail/logs").then((m) => ({ default: m.DomainLogs })));
@@ -90,6 +91,7 @@ function App() {
                     <Route path="databases" element={<DomainDatabases />} />
                     <Route path="ftp" element={<DomainFTP />} />
                     <Route path="email" element={<DomainEmail />} />
+                    <Route path="crons" element={<DomainCrons />} />
                     <Route path="git" element={<DomainGit />} />
                     <Route path="logs" element={<DomainLogs />} />
                     <Route path="backups" element={<DomainBackups />} />

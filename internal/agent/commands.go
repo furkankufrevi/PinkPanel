@@ -153,6 +153,10 @@ func (r *CommandRegistry) registerBuiltins() {
 	r.commands["git_log"] = cmdGitLog
 	r.commands["git_setup_hook"] = cmdGitSetupHook
 	r.commands["git_ssh_key"] = cmdGitSSHKey
+
+	// Cron
+	r.commands["cron_sync"] = cmdCronSync
+	r.commands["cron_execute"] = cmdCronExecute
 }
 
 // ---------- Param types ----------
@@ -3257,6 +3261,96 @@ func cmdGitSSHKey(_ json.RawMessage) (interface{}, error) {
 	}
 
 	return map[string]any{"public_key": strings.TrimSpace(string(pubKey))}, nil
+}
+
+// ---------- Cron commands ----------
+
+type cronSyncParams struct {
+	User string `json:"user"`
+	Jobs []struct {
+		ID       int64  `json:"id"`
+		Schedule string `json:"schedule"`
+		Command  string `json:"command"`
+	} `json:"jobs"`
+}
+
+func cmdCronSync(params json.RawMessage) (interface{}, error) {
+	var p cronSyncParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if p.User == "" {
+		return nil, fmt.Errorf("user is required")
+	}
+
+	// Build crontab content
+	var lines []string
+	lines = append(lines, "# PinkPanel managed crontab - do not edit manually")
+	for _, job := range p.Jobs {
+		// Each line: schedule command
+		lines = append(lines, fmt.Sprintf("%s %s", job.Schedule, job.Command))
+	}
+	lines = append(lines, "") // trailing newline
+	crontab := strings.Join(lines, "\n")
+
+	// Write via crontab -u USER -
+	cmd := exec.Command("crontab", "-u", p.User, "-")
+	cmd.Stdin = strings.NewReader(crontab)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("crontab sync failed: %s", strings.TrimSpace(string(out)))
+	}
+
+	return map[string]any{"status": "ok", "job_count": len(p.Jobs)}, nil
+}
+
+type cronExecuteParams struct {
+	User    string `json:"user"`
+	Command string `json:"command"`
+}
+
+func cmdCronExecute(params json.RawMessage) (interface{}, error) {
+	var p cronExecuteParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if p.User == "" || p.Command == "" {
+		return nil, fmt.Errorf("user and command are required")
+	}
+
+	start := time.Now()
+
+	var cmd *exec.Cmd
+	if runtime.GOOS == "darwin" {
+		// macOS: su doesn't support -s flag the same way
+		cmd = exec.Command("su", "-", p.User, "-c", p.Command)
+	} else {
+		cmd = exec.Command("su", "-s", "/bin/bash", "-c", p.Command, p.User)
+	}
+
+	out, err := cmd.CombinedOutput()
+	durationMs := time.Since(start).Milliseconds()
+
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return nil, fmt.Errorf("failed to execute command: %w", err)
+		}
+	}
+
+	// Limit output to 64KB
+	output := string(out)
+	if len(output) > 65536 {
+		output = output[:65536] + "\n... (output truncated)"
+	}
+
+	return map[string]any{
+		"exit_code":   exitCode,
+		"output":      output,
+		"duration_ms": durationMs,
+	}, nil
 }
 
 func escapeMySQLString(s string) string {

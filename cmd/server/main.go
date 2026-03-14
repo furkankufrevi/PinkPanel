@@ -27,6 +27,7 @@ import (
 	"github.com/pinkpanel/pinkpanel/internal/core/backup"
 	"github.com/pinkpanel/pinkpanel/internal/core/ftp"
 	emailpkg "github.com/pinkpanel/pinkpanel/internal/core/email"
+	cronpkg "github.com/pinkpanel/pinkpanel/internal/core/cron"
 	gitpkg "github.com/pinkpanel/pinkpanel/internal/core/git"
 	sslpkg "github.com/pinkpanel/pinkpanel/internal/core/ssl"
 	"github.com/pinkpanel/pinkpanel/internal/core/user"
@@ -40,7 +41,7 @@ import (
 //go:embed all:static
 var embeddedFiles embed.FS
 
-var version = "0.7.14-alpha"
+var version = "0.8.0-alpha"
 
 func main() {
 	// Parse flags
@@ -270,6 +271,16 @@ func main() {
 		AgentClient: agentClient,
 	}
 
+	// Cron service & handler
+	cronSvc := &cronpkg.Service{DB: database}
+	cronHandler := &handlers.CronHandler{
+		DB:          database,
+		CronSvc:     cronSvc,
+		DomainSvc:   domainSvc,
+		UserSvc:     userSvc,
+		AgentClient: agentClient,
+	}
+
 	// Security handler (Fail2ban)
 	securityHandler := &handlers.SecurityHandler{
 		DB:          database,
@@ -468,6 +479,15 @@ func main() {
 	protected.Delete("/domains/:id/git/:repoId", gitHandler.DeleteRepo)
 	protected.Post("/domains/:id/git/:repoId/deploy", gitHandler.TriggerDeploy)
 	protected.Get("/domains/:id/git/:repoId/deployments", gitHandler.ListDeployments)
+
+	// Cron routes
+	protected.Get("/domains/:id/crons", cronHandler.List)
+	protected.Post("/domains/:id/crons", cronHandler.Create)
+	protected.Get("/crons/:id", cronHandler.Get)
+	protected.Put("/crons/:id", cronHandler.Update)
+	protected.Delete("/crons/:id", cronHandler.Delete)
+	protected.Post("/crons/:id/run", cronHandler.RunNow)
+	protected.Get("/crons/:id/logs", cronHandler.GetLogs)
 
 	// Git webhook (public, no auth)
 	api.Post("/git/webhook/:secret", gitHandler.WebhookHandler)
