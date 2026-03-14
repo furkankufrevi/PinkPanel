@@ -794,7 +794,7 @@ SPAMILTER
     mkdir -p /var/spool/postfix/clamav
     chown clamav:postfix /var/spool/postfix/clamav 2>/dev/null || true
 
-    if [[ ! -f /etc/clamav/clamav-milter.conf ]] || ! grep -q "OnInfected" /etc/clamav/clamav-milter.conf 2>/dev/null; then
+    if [[ ! -f /etc/clamav/clamav-milter.conf ]] || ! grep -q "/var/spool/postfix/clamav/" /etc/clamav/clamav-milter.conf 2>/dev/null; then
         cat > /etc/clamav/clamav-milter.conf <<'CMILTER'
 MilterSocket /var/spool/postfix/clamav/clamav-milter.sock
 MilterSocketMode 660
@@ -864,7 +864,8 @@ DSIEVE
         sleep 1
         (( retries++ ))
     done
-    systemctl enable --now clamav-milter > /dev/null 2>&1 || true
+    systemctl restart clamav-milter > /dev/null 2>&1 || true
+    systemctl enable clamav-milter > /dev/null 2>&1 || true
     systemctl enable --now spamassassin > /dev/null 2>&1 || true
     systemctl enable --now spamass-milter > /dev/null 2>&1 || true
     systemctl reload dovecot > /dev/null 2>&1 || true
@@ -875,10 +876,15 @@ DSIEVE
     else
         warn "ClamAV daemon not running — virus scanning will be bypassed"
     fi
-    if systemctl is-active --quiet spamassassin; then
-        log "SpamAssassin running"
+    if [[ -S /var/spool/postfix/clamav/clamav-milter.sock ]]; then
+        log "ClamAV milter socket ready"
     else
-        warn "SpamAssassin not running — spam filtering will be bypassed"
+        warn "ClamAV milter socket not found at /var/spool/postfix/clamav/clamav-milter.sock"
+    fi
+    if systemctl is-active --quiet spamass-milter; then
+        log "SpamAssassin milter running"
+    else
+        warn "SpamAssassin milter not running — spam filtering will be bypassed"
     fi
 
     log "Spam & antivirus ready"
