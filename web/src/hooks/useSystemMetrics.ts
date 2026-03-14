@@ -9,6 +9,8 @@ export interface SystemMetrics {
   disk: { mount: string; filesystem: string; total: string; used: string; available: string; use_percent: string }[];
   uptime: string;
   load_avg: string;
+  cpu_history?: number[];
+  ram_history?: number[];
 }
 
 export function useSystemMetrics() {

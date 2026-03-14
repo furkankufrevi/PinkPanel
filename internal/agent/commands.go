@@ -157,6 +157,10 @@ func (r *CommandRegistry) registerBuiltins() {
 	// Cron
 	r.commands["cron_sync"] = cmdCronSync
 	r.commands["cron_execute"] = cmdCronExecute
+
+	// Monitoring
+	r.commands["domain_disk_usage"] = cmdDomainDiskUsage
+	r.commands["domain_bandwidth"] = cmdDomainBandwidth
 }
 
 // ---------- Param types ----------
@@ -3261,6 +3265,67 @@ func cmdGitSSHKey(_ json.RawMessage) (interface{}, error) {
 	}
 
 	return map[string]any{"public_key": strings.TrimSpace(string(pubKey))}, nil
+}
+
+// ---------- Monitoring commands ----------
+
+type domainDiskUsageParams struct {
+	Path string `json:"path"`
+}
+
+func cmdDomainDiskUsage(params json.RawMessage) (interface{}, error) {
+	var p domainDiskUsageParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if p.Path == "" {
+		return nil, fmt.Errorf("path is required")
+	}
+	if err := validatePath(p.Path); err != nil {
+		return nil, err
+	}
+
+	// Use du -sb with a 30-second timeout
+	cmd := exec.Command("du", "-sb", p.Path)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return map[string]any{"bytes": 0}, nil
+	}
+
+	fields := strings.Fields(string(out))
+	if len(fields) < 1 {
+		return map[string]any{"bytes": 0}, nil
+	}
+	bytes, _ := strconv.ParseInt(fields[0], 10, 64)
+	return map[string]any{"bytes": bytes}, nil
+}
+
+type domainBandwidthParams struct {
+	LogPath string `json:"log_path"`
+}
+
+func cmdDomainBandwidth(params json.RawMessage) (interface{}, error) {
+	var p domainBandwidthParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if p.LogPath == "" {
+		return nil, fmt.Errorf("log_path is required")
+	}
+	// Security: only allow reading from /var/log/nginx/
+	if !strings.HasPrefix(p.LogPath, "/var/log/nginx/") {
+		return nil, fmt.Errorf("log_path must be under /var/log/nginx/")
+	}
+
+	// Sum bytes_sent (field 10 in combined log format)
+	cmd := exec.Command("awk", `{sum += $10} END {print sum+0}`, p.LogPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return map[string]any{"bytes": 0}, nil
+	}
+
+	bytes, _ := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	return map[string]any{"bytes": bytes}, nil
 }
 
 // ---------- Cron commands ----------

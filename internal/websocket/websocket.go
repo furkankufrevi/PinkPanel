@@ -10,6 +10,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/pinkpanel/pinkpanel/internal/agent"
+	"github.com/pinkpanel/pinkpanel/internal/core/monitor"
 )
 
 // Hub manages WebSocket connections and broadcasts system metrics.
@@ -17,6 +18,7 @@ type Hub struct {
 	clients     map[*websocket.Conn]bool
 	mu          sync.RWMutex
 	agentClient *agent.Client
+	monitorSvc  *monitor.Service
 	stop        chan struct{}
 }
 
@@ -27,6 +29,11 @@ func NewHub(agentClient *agent.Client) *Hub {
 		agentClient: agentClient,
 		stop:        make(chan struct{}),
 	}
+}
+
+// SetMonitorService sets the monitor service for sparkline data.
+func (h *Hub) SetMonitorService(svc *monitor.Service) {
+	h.monitorSvc = svc
 }
 
 // HandleConnection handles a new WebSocket connection.
@@ -89,6 +96,18 @@ func (h *Hub) broadcast() {
 	resp, err := h.agentClient.Call("system_info", nil)
 	if err != nil {
 		return
+	}
+
+	// Augment with sparkline history if monitor service is available
+	if h.monitorSvc != nil {
+		if result, ok := resp.Result.(map[string]any); ok {
+			cpuJSON, ramJSON := h.monitorSvc.MarshalSparklineJSON()
+			var cpuHist, ramHist []float64
+			json.Unmarshal(cpuJSON, &cpuHist)
+			json.Unmarshal(ramJSON, &ramHist)
+			result["cpu_history"] = cpuHist
+			result["ram_history"] = ramHist
+		}
 	}
 
 	data, err := json.Marshal(resp.Result)

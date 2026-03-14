@@ -28,6 +28,7 @@ import (
 	"github.com/pinkpanel/pinkpanel/internal/core/ftp"
 	emailpkg "github.com/pinkpanel/pinkpanel/internal/core/email"
 	cronpkg "github.com/pinkpanel/pinkpanel/internal/core/cron"
+	"github.com/pinkpanel/pinkpanel/internal/core/monitor"
 	gitpkg "github.com/pinkpanel/pinkpanel/internal/core/git"
 	sslpkg "github.com/pinkpanel/pinkpanel/internal/core/ssl"
 	"github.com/pinkpanel/pinkpanel/internal/core/user"
@@ -281,6 +282,14 @@ func main() {
 		AgentClient: agentClient,
 	}
 
+	// Monitor service & handler
+	monitorSvc := &monitor.Service{
+		DB:          database,
+		AgentClient: agentClient,
+		DomainSvc:   domainSvc,
+	}
+	monitorHandler := &handlers.MonitorHandler{MonitorSvc: monitorSvc}
+
 	// Security handler (Fail2ban)
 	securityHandler := &handlers.SecurityHandler{
 		DB:          database,
@@ -421,6 +430,11 @@ func main() {
 	protected.Get("/settings/activity", settingsHandler.ActivityLog)
 	protected.Get("/settings/server-info", settingsHandler.ServerInfo)
 
+	// Metrics routes
+	protected.Get("/metrics/system", monitorHandler.SystemHistory)
+	protected.Get("/metrics/system/current", monitorHandler.SystemCurrent)
+	protected.Get("/domains/:id/metrics", monitorHandler.DomainMetrics)
+
 	// Updates routes (admin+ only)
 	updatesHandler := &handlers.UpdatesHandler{
 		DB:          database,
@@ -554,7 +568,11 @@ func main() {
 	}
 	backupScheduler.Start()
 
-	// Start WebSocket hub
+	// Start monitor service
+	monitorSvc.Start()
+
+	// Start WebSocket hub (with sparkline data from monitor)
+	wsHub.SetMonitorService(monitorSvc)
 	wsHub.Start()
 
 	// Agent heartbeat
@@ -576,6 +594,7 @@ func main() {
 		<-quit
 		log.Info().Msg("shutting down gracefully...")
 		wsHub.Stop()
+		monitorSvc.Stop()
 		renewalSvc.Stop()
 		backupScheduler.Stop()
 		close(stopHeartbeat)

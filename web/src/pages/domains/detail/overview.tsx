@@ -14,6 +14,7 @@ import {
   Copy,
   CheckCircle2,
   XCircle,
+  Gauge,
 } from "lucide-react";
 import {
   Card,
@@ -31,6 +32,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getSSLCertificate } from "@/api/ssl";
 import { listDomains } from "@/api/domains";
 import { listDNSRecords } from "@/api/dns";
+import { getDomainMetrics } from "@/api/metrics";
 import type { Domain } from "@/types/domain";
 
 interface DomainContext {
@@ -62,6 +64,12 @@ export function DomainOverview() {
     enabled: !!domainId && !isSubdomain,
   });
 
+  const { data: metricsData } = useQuery({
+    queryKey: ["domain-metrics", domainId],
+    queryFn: () => getDomainMetrics(domainId!, 168),
+    enabled: !!domainId,
+  });
+
   const { data: dnsRecords } = useQuery({
     queryKey: ["dns", domainId],
     queryFn: () => listDNSRecords(domainId!),
@@ -82,6 +90,7 @@ export function DomainOverview() {
 
   if (!domain) return null;
 
+  const currentMetrics = metricsData?.data?.current;
   const sslInstalled = ssl?.installed ?? false;
   const childSubdomains = allDomains?.data?.filter((d) => d.parent_id === domain.id) ?? [];
   const subdomainCount = childSubdomains.length;
@@ -260,6 +269,34 @@ export function DomainOverview() {
         </CardContent>
       </Card>
 
+      {/* Resource Usage */}
+      {currentMetrics && (
+        <Card>
+          <CardHeader className="pb-2">
+            <div className="flex items-center gap-2">
+              <Gauge className="h-4 w-4 text-pink-500" />
+              <CardTitle className="text-sm font-medium">Resource Usage</CardTitle>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <span className="text-xs text-muted-foreground">Disk Usage</span>
+                <p className="text-lg font-semibold">
+                  {formatDomainBytes(currentMetrics.disk_usage_bytes)}
+                </p>
+              </div>
+              <div className="space-y-1">
+                <span className="text-xs text-muted-foreground">Bandwidth (from logs)</span>
+                <p className="text-lg font-semibold">
+                  {formatDomainBytes(currentMetrics.bandwidth_bytes)}
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Feature cards grid */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         {featureCards.map((card) => (
@@ -287,4 +324,11 @@ export function DomainOverview() {
       </div>
     </div>
   );
+}
+
+function formatDomainBytes(bytes: number): string {
+  if (!bytes || bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
 }
