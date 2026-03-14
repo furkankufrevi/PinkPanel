@@ -29,7 +29,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { toast } from "sonner";
 import {
   getAppCatalog,
@@ -65,9 +64,7 @@ import {
   Settings,
   Globe,
   Database,
-  Shield,
   Eye,
-  Terminal,
 } from "lucide-react";
 
 function AppStatusBadge({ status }: { status: string }) {
@@ -201,7 +198,7 @@ export function DomainApps() {
     queryKey: ["app-logs", progressAppId],
     queryFn: () => getAppLogs(progressAppId!),
     enabled: !!progressAppId && progressOpen,
-    refetchInterval: (q) => {
+    refetchInterval: () => {
       const appStatus = progressApp?.status;
       return appStatus === "installing" || appStatus === "updating"
         ? 2000
@@ -694,18 +691,16 @@ export function DomainApps() {
       </Dialog>
 
       {/* Uninstall Confirm Dialog */}
-      <ConfirmDialog
-        open={uninstallOpen}
-        onOpenChange={setUninstallOpen}
-        title={`Uninstall ${selectedInstalled?.app_name}?`}
-        description={
-          <div className="space-y-3">
-            <p>
+      <Dialog open={uninstallOpen} onOpenChange={setUninstallOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Uninstall {selectedInstalled?.app_name}?</DialogTitle>
+            <DialogDescription>
               This will delete all application files at{" "}
-              <code className="text-xs bg-muted px-1 py-0.5 rounded">
-                {selectedInstalled?.install_path}
-              </code>
-            </p>
+              {selectedInstalled?.install_path}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
             {selectedInstalled?.db_name && (
               <div className="flex items-center gap-2">
                 <Switch
@@ -714,20 +709,28 @@ export function DomainApps() {
                   id="drop-db"
                 />
                 <Label htmlFor="drop-db" className="text-sm">
-                  Also drop database{" "}
-                  <code className="text-xs bg-muted px-1 py-0.5 rounded">
-                    {selectedInstalled.db_name}
-                  </code>
+                  Also drop database ({selectedInstalled.db_name})
                 </Label>
               </div>
             )}
           </div>
-        }
-        confirmText="Uninstall"
-        destructive
-        loading={uninstallMutation.isPending}
-        onConfirm={() => uninstallMutation.mutate()}
-      />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUninstallOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => uninstallMutation.mutate()}
+              disabled={uninstallMutation.isPending}
+            >
+              {uninstallMutation.isPending && (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              )}
+              Uninstall
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* WordPress Manage Sheet */}
       {selectedInstalled?.app_type === "wordpress" && (
