@@ -92,9 +92,7 @@ func (s *Service) CreateRepo(domainID int64, name, repoType, remoteURL, branch, 
 	if deployPath == "" {
 		return nil, fmt.Errorf("deploy_path is required")
 	}
-	if branch == "" {
-		branch = "main"
-	}
+	// Don't default branch — let git use the remote's default (HEAD)
 	if deployMode == "" {
 		deployMode = "manual"
 	}

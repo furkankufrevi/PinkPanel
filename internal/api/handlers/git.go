@@ -92,15 +92,15 @@ func (h *GitHandler) CreateRepo(c *fiber.Ctx) error {
 	// For remote repos, clone via agent
 	if req.RepoType == "remote" {
 		repoWorkDir := fmt.Sprintf("/var/lib/pinkpanel/git/%d/%s", domainID, req.Name)
-		branch := req.Branch
-		if branch == "" {
-			branch = "main"
+		cloneParams := map[string]any{
+			"url":  req.RemoteURL,
+			"path": repoWorkDir,
 		}
-		if _, err := h.AgentClient.Call("git_clone", map[string]any{
-			"url":    req.RemoteURL,
-			"path":   repoWorkDir,
-			"branch": branch,
-		}); err != nil {
+		// Only pass branch if user explicitly specified one; otherwise let git use remote's default (HEAD)
+		if req.Branch != "" {
+			cloneParams["branch"] = req.Branch
+		}
+		if _, err := h.AgentClient.Call("git_clone", cloneParams); err != nil {
 			// Rollback DB entry
 			h.GitSvc.DeleteRepo(repo.ID)
 			return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "agent_error", "message": "failed to clone repository: " + err.Error()}})

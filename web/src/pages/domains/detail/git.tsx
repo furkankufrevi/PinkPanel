@@ -77,7 +77,7 @@ export function DomainGit() {
   const [newType, setNewType] = useState<"remote" | "local">("remote");
   const [newRemoteURL, setNewRemoteURL] = useState("");
   const [newName, setNewName] = useState("");
-  const [newBranch, setNewBranch] = useState("main");
+  const [newBranch, setNewBranch] = useState("");
   const [newDeployMode, setNewDeployMode] = useState("automatic");
   const [newDeployPath, setNewDeployPath] = useState("");
   const [newPostDeployCmd, setNewPostDeployCmd] = useState("");
@@ -114,7 +114,7 @@ export function DomainGit() {
         name: newName,
         repo_type: newType,
         remote_url: newType === "remote" ? newRemoteURL : undefined,
-        branch: newBranch,
+        branch: newBranch || undefined,
         deploy_mode: newDeployMode,
         deploy_path: newDeployPath || undefined,
       }),
@@ -169,7 +169,7 @@ export function DomainGit() {
     setNewType("remote");
     setNewRemoteURL("");
     setNewName("");
-    setNewBranch("main");
+    setNewBranch("");
     setNewDeployMode("automatic");
     setNewDeployPath("");
     setNewPostDeployCmd("");
