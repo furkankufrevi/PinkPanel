@@ -2969,7 +2969,9 @@ func cmdGitClone(params json.RawMessage) (interface{}, error) {
 	}
 	args = append(args, "--single-branch", p.URL, p.Path)
 
-	out, err := exec.Command("git", args...).CombinedOutput()
+	cmd := exec.Command("git", args...)
+	cmd.Env = append(os.Environ(), "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("git clone failed: %s", strings.TrimSpace(string(out)))
 	}
@@ -2998,7 +3000,9 @@ func cmdGitPull(params json.RawMessage) (interface{}, error) {
 		args = append(args, p.Branch)
 	}
 
-	out, err := exec.Command("git", args...).CombinedOutput()
+	cmd := exec.Command("git", args...)
+	cmd.Env = append(os.Environ(), "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("git pull failed: %s", strings.TrimSpace(string(out)))
 	}
