@@ -845,9 +845,8 @@ setup_spam_antivirus() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get install -y -qq spamassassin spamass-milter \
         clamav clamav-daemon clamav-milter \
-        dovecot-sieve dovecot-managesieved > /dev/null 2>&1 || {
-        warn "Some spam/antivirus packages not available — skipping"
-        return
+        dovecot-sieve dovecot-managesieved 2>&1 | tail -5 || {
+        warn "Some spam/antivirus packages failed to install — filtering may be incomplete"
     }
 
     # Enable SpamAssassin daemon

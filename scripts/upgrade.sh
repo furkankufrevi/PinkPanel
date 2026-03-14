@@ -737,6 +737,14 @@ TRUSTED
     mkdir -p /run/opendkim
     chown opendkim:opendkim /run/opendkim 2>/dev/null || true
 
+    # Rate limiting (prevent abuse if accounts get compromised)
+    if ! grep -q "smtpd_client_message_rate_limit" /etc/postfix/main.cf 2>/dev/null; then
+        log "Adding Postfix rate limiting..."
+        postconf -e "smtpd_client_message_rate_limit = 100"
+        postconf -e "smtpd_client_recipient_rate_limit = 500"
+        postconf -e "anvil_rate_time_unit = 3600s"
+    fi
+
     # Open mail ports if ufw is active
     if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
         ufw allow 25/tcp > /dev/null 2>&1 || true
@@ -759,6 +767,18 @@ TRUSTED
 # ── SpamAssassin & ClamAV setup ────────────
 setup_spam_antivirus() {
     log "Checking spam & antivirus..."
+
+    # Ensure packages are installed (may have been missed on initial install)
+    local spam_pkgs=()
+    command -v spamd &>/dev/null || spam_pkgs+=("spamassassin" "spamass-milter")
+    dpkg -s clamav-milter &>/dev/null 2>&1 || spam_pkgs+=("clamav" "clamav-daemon" "clamav-milter")
+    dpkg -s dovecot-sieve &>/dev/null 2>&1 || spam_pkgs+=("dovecot-sieve" "dovecot-managesieved")
+    if (( ${#spam_pkgs[@]} > 0 )); then
+        log "Installing spam/antivirus packages: ${spam_pkgs[*]}..."
+        apt-get install -y -qq "${spam_pkgs[@]}" > /dev/null 2>&1 || {
+            log "WARNING: Some spam/antivirus packages not available"
+        }
+    fi
 
     # Configure spamass-milter socket inside Postfix chroot
     mkdir -p /var/spool/postfix/spamass
