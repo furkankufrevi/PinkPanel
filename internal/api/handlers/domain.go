@@ -699,7 +699,7 @@ func (h *DomainHandler) Delete(c *fiber.Ctx) error {
 		})
 	}
 
-	// Clean up child subdomain NGINX configs before DB cascade deletes them
+	// Clean up child subdomain resources before DB cascade deletes them
 	children, _ := h.DomainSvc.GetChildren(id)
 	for _, child := range children {
 		h.AgentClient.Call("file_delete", map[string]interface{}{"path": fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", child.Name)})
@@ -707,6 +707,8 @@ func (h *DomainHandler) Delete(c *fiber.Ctx) error {
 		// Remove child PHP pool
 		poolPath := fmt.Sprintf("/etc/php/%s/fpm/pool.d/%s.conf", child.PHPVersion, child.Name)
 		h.AgentClient.Call("file_delete", map[string]interface{}{"path": poolPath})
+		// Remove child SSL certs
+		h.AgentClient.Call("ssl_delete_cert", map[string]interface{}{"domain": child.Name})
 		// Remove child DNS zone if it has separate DNS
 		if child.SeparateDNS {
 			h.AgentClient.Call("dns_remove_zone", map[string]interface{}{"domain": child.Name})
@@ -741,26 +743,25 @@ func (h *DomainHandler) Delete(c *fiber.Ctx) error {
 		h.AgentClient.Call("php_reload", map[string]interface{}{"version": d.PHPVersion})
 	}
 
-	// Remove NGINX config files
-	configPath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", d.Name)
-	_, err = h.AgentClient.Call("file_delete", map[string]interface{}{
-		"path": configPath,
-	})
-	if err != nil {
-		log.Printf("WARNING: failed to delete sites-available config for %s: %v", d.Name, err)
+	// Remove NGINX config files (domain + mail subdomain)
+	for _, vhostName := range []string{d.Name, "mail." + d.Name} {
+		h.AgentClient.Call("file_delete", map[string]interface{}{
+			"path": fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", vhostName),
+		})
+		h.AgentClient.Call("file_delete", map[string]interface{}{
+			"path": fmt.Sprintf("/etc/nginx/sites-available/%s.conf", vhostName),
+		})
 	}
 
-	enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", d.Name)
-	_, err = h.AgentClient.Call("file_delete", map[string]interface{}{
-		"path": enabledPath,
-	})
-	if err != nil {
-		log.Printf("WARNING: failed to delete sites-enabled config for %s: %v", d.Name, err)
+	// Remove SSL certificate directories (domain + mail subdomain)
+	for _, sslName := range []string{d.Name, "mail." + d.Name} {
+		h.AgentClient.Call("ssl_delete_cert", map[string]interface{}{
+			"domain": sslName,
+		})
 	}
 
 	// Reload NGINX
-	_, err = h.AgentClient.Call("nginx_reload", nil)
-	if err != nil {
+	if _, err := h.AgentClient.Call("nginx_reload", nil); err != nil {
 		log.Printf("ERROR: nginx reload failed after deleting %s: %v", d.Name, err)
 	}
 
