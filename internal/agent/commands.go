@@ -61,6 +61,7 @@ func (r *CommandRegistry) registerBuiltins() {
 	r.commands["dir_create"] = cmdDirCreate
 	r.commands["set_ownership"] = cmdSetOwnership
 	r.commands["set_permissions"] = cmdSetPermissions
+	r.commands["file_symlink"] = cmdFileSymlink
 
 	// NGINX
 	r.commands["nginx_test"] = cmdNginxTest
@@ -187,6 +188,11 @@ type fileReadParams struct {
 type fileDeleteParams struct {
 	Path      string `json:"path"`
 	Recursive bool   `json:"recursive"`
+}
+
+type fileSymlinkParams struct {
+	Target string `json:"target"` // existing file
+	Link   string `json:"link"`   // symlink path to create
 }
 
 type fileListParams struct {
@@ -686,6 +692,25 @@ func cmdFileDelete(params json.RawMessage) (interface{}, error) {
 		if err := os.Remove(p.Path); err != nil {
 			return nil, fmt.Errorf("removing file: %w", err)
 		}
+	}
+	return map[string]string{"status": "ok"}, nil
+}
+
+func cmdFileSymlink(params json.RawMessage) (interface{}, error) {
+	var p fileSymlinkParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if err := validatePath(p.Target); err != nil {
+		return nil, err
+	}
+	if err := validatePath(p.Link); err != nil {
+		return nil, err
+	}
+	// Remove existing file/symlink at link path
+	os.Remove(p.Link)
+	if err := os.Symlink(p.Target, p.Link); err != nil {
+		return nil, fmt.Errorf("creating symlink: %w", err)
 	}
 	return map[string]string{"status": "ok"}, nil
 }

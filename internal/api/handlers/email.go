@@ -981,7 +981,6 @@ func (h *EmailHandler) setupMailVhost(mailDomain, documentRoot string) {
 	log.Info().Str("domain", mailDomain).Msg("setting up mail vhost")
 
 	configPath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", mailDomain)
-	enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", mailDomain)
 
 	// Step 1: Create HTTP-only mail vhost (needed for ACME HTTP-01 challenge)
 	httpVhost, err := tmpl.RenderNginxMailVhost(tmpl.NginxMailVhostData{
@@ -999,13 +998,7 @@ func (h *EmailHandler) setupMailVhost(mailDomain, documentRoot string) {
 		log.Error().Err(err).Str("path", configPath).Msg("failed to write mail nginx config")
 		return
 	}
-	log.Info().Str("path", enabledPath).Msg("writing mail vhost enabled config")
-	if _, err := h.AgentClient.Call("file_write", map[string]any{
-		"path": enabledPath, "content": httpVhost, "mode": "0644",
-	}); err != nil {
-		log.Error().Err(err).Str("path", enabledPath).Msg("failed to write mail nginx enabled config")
-		return
-	}
+	enableVhost(h.AgentClient, mailDomain)
 	log.Info().Msg("testing nginx config for mail vhost")
 	if _, err := h.AgentClient.Call("nginx_test", nil); err != nil {
 		log.Error().Err(err).Msg("mail vhost nginx test failed — check snippets/roundcube.conf exists")
@@ -1069,12 +1062,7 @@ func (h *EmailHandler) setupMailVhost(mailDomain, documentRoot string) {
 		log.Error().Err(err).Msg("failed to write SSL mail nginx config")
 		return
 	}
-	if _, err := h.AgentClient.Call("file_write", map[string]any{
-		"path": enabledPath, "content": sslVhost, "mode": "0644",
-	}); err != nil {
-		log.Error().Err(err).Msg("failed to write SSL mail nginx enabled config")
-		return
-	}
+	enableVhost(h.AgentClient, mailDomain)
 	if _, err := h.AgentClient.Call("nginx_test", nil); err != nil {
 		log.Error().Err(err).Msg("SSL mail vhost nginx test failed")
 		return
@@ -1295,7 +1283,7 @@ func (h *EmailHandler) syncVirtualMaps() {
 
 // regenerateZone triggers a DNS zone regeneration via the agent.
 func (h *EmailHandler) regenerateZone(domainID int64, domainName string) {
-	zoneRecords, err := buildZoneRecords(h.DNSSvc, h.DomainSvc, domainID, domainName)
+	zoneRecords, err := buildZoneRecords(h.DNSSvc, h.DomainSvc, h.AgentClient, domainID, domainName)
 	if err != nil {
 		log.Error().Err(err).Str("domain", domainName).Msg("failed to build zone records")
 		return

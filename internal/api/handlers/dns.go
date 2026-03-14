@@ -394,10 +394,10 @@ func (h *DNSHandler) ResetDefaults(c *fiber.Ctx) error {
 }
 
 // buildZoneRecords converts DNS records to ZoneRecord slice and appends
-// A/AAAA records for subdomains with separate_dns=0. This ensures subdomain
-// records always appear in the parent zone regardless of whether they were
-// explicitly stored in dns_records.
-func buildZoneRecords(dnsSvc *dns.Service, domainSvc *domain.Service, domainID int64, domainName string) ([]tmpl.ZoneRecord, error) {
+// A/AAAA records for subdomains with separate_dns=0 and DKIM records from
+// OpenDKIM keys on disk. This ensures the zone always includes subdomain
+// and DKIM records regardless of what's in dns_records.
+func buildZoneRecords(dnsSvc *dns.Service, domainSvc *domain.Service, agentClient *agent.Client, domainID int64, domainName string) ([]tmpl.ZoneRecord, error) {
 	records, err := dnsSvc.ListByDomain(domainID)
 	if err != nil {
 		return nil, fmt.Errorf("listing dns records: %w", err)
@@ -418,19 +418,18 @@ func buildZoneRecords(dnsSvc *dns.Service, domainSvc *domain.Service, domainID i
 		zoneRecords = append(zoneRecords, zr)
 	}
 
+	// Build a set of existing names+types to avoid duplicates
+	existing := make(map[string]bool)
+	for _, zr := range zoneRecords {
+		existing[zr.Name+"/"+zr.Type] = true
+	}
+
 	// Add A/AAAA records for subdomains with separate_dns=0.
-	// These subdomains resolve via the parent zone, so we must include their
-	// records even if they weren't explicitly inserted into dns_records.
 	if domainSvc != nil {
 		children, err := domainSvc.GetChildren(domainID)
 		if err == nil {
 			serverIP := getServerIP()
 			serverIPv6 := getServerIPv6()
-			// Build a set of existing names+types to avoid duplicates
-			existing := make(map[string]bool)
-			for _, zr := range zoneRecords {
-				existing[zr.Name+"/"+zr.Type] = true
-			}
 			for _, child := range children {
 				if child.SeparateDNS {
 					continue
@@ -441,21 +440,39 @@ func buildZoneRecords(dnsSvc *dns.Service, domainSvc *domain.Service, domainID i
 				}
 				if !existing[prefix+"/A"] {
 					zoneRecords = append(zoneRecords, tmpl.ZoneRecord{
-						Name:  prefix,
-						TTL:   3600,
-						Class: "IN",
-						Type:  "A",
-						Value: serverIP,
+						Name: prefix, TTL: 3600, Class: "IN", Type: "A", Value: serverIP,
 					})
+					existing[prefix+"/A"] = true
 				}
 				if serverIPv6 != "" && !existing[prefix+"/AAAA"] {
 					zoneRecords = append(zoneRecords, tmpl.ZoneRecord{
-						Name:  prefix,
-						TTL:   3600,
-						Class: "IN",
-						Type:  "AAAA",
-						Value: serverIPv6,
+						Name: prefix, TTL: 3600, Class: "IN", Type: "AAAA", Value: serverIPv6,
 					})
+					existing[prefix+"/AAAA"] = true
+				}
+			}
+		}
+	}
+
+	// Inject DKIM record from OpenDKIM keys on disk if missing from DB.
+	// This prevents zone regeneration from wiping manually-added or
+	// out-of-band DKIM records.
+	if agentClient != nil && !existing["mail._domainkey/TXT"] {
+		resp, err := agentClient.Call("email_generate_dkim", map[string]any{"domain": domainName})
+		if err == nil && resp != nil {
+			if result, ok := resp.Result.(map[string]any); ok {
+				pubKey, _ := result["public_key"].(string)
+				selector, _ := result["selector"].(string)
+				if pubKey != "" && selector != "" {
+					name := selector + "._domainkey"
+					if !existing[name+"/TXT"] {
+						zoneRecords = append(zoneRecords, tmpl.ZoneRecord{
+							Name: name, TTL: 3600, Class: "IN", Type: "TXT", Value: pubKey,
+						})
+						existing[name+"/TXT"] = true
+						// Also persist to DB so future builds find it
+						dnsSvc.Create(domainID, "TXT", name, pubKey, 3600, nil)
+					}
 				}
 			}
 		}
@@ -473,7 +490,7 @@ func regenerateZone(h *DNSHandler, domainID int64, domainName string) string {
 	mu.Lock()
 	defer mu.Unlock()
 
-	zoneRecords, err := buildZoneRecords(h.DNSSvc, h.DomainSvc, domainID, domainName)
+	zoneRecords, err := buildZoneRecords(h.DNSSvc, h.DomainSvc, h.AgentClient, domainID, domainName)
 	if err != nil {
 		msg := fmt.Sprintf("failed to build zone records for %s: %v", domainName, err)
 		log.Printf("WARNING: %s", msg)

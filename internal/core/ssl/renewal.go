@@ -208,8 +208,8 @@ func (r *RenewalService) renewCert(cert CertForRenewal) {
 		logger.Error().Err(err).Msg("failed to write NGINX sites-available config")
 		return
 	}
-	if _, err := r.AgentClient.Call("file_write", map[string]any{"path": enabledPath, "content": vhostContent, "mode": "0644"}); err != nil {
-		logger.Error().Err(err).Msg("failed to write NGINX sites-enabled config")
+	if _, err := r.AgentClient.Call("file_symlink", map[string]any{"target": configPath, "link": enabledPath}); err != nil {
+		logger.Error().Err(err).Msg("failed to symlink NGINX sites-enabled config")
 	}
 	if _, err := r.AgentClient.Call("nginx_reload", nil); err != nil {
 		logger.Error().Err(err).Msg("failed to reload NGINX")

@@ -280,7 +280,7 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 	if err != nil {
 		log.Printf("WARNING: failed to render vhost for %s: %v", d.Name, err)
 	} else {
-		// Write vhost to sites-available
+		// Write vhost to sites-available and symlink sites-enabled
 		configPath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", d.Name)
 		_, err = h.AgentClient.Call("file_write", map[string]interface{}{
 			"path":    configPath,
@@ -290,17 +290,7 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 		if err != nil {
 			log.Printf("WARNING: failed to write vhost config for %s: %v", d.Name, err)
 		}
-
-		// Write vhost to sites-enabled
-		enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", d.Name)
-		_, err = h.AgentClient.Call("file_write", map[string]interface{}{
-			"path":    enabledPath,
-			"content": vhostContent,
-			"mode":    "0644",
-		})
-		if err != nil {
-			log.Printf("WARNING: failed to write sites-enabled config for %s: %v", d.Name, err)
-		}
+		enableVhost(h.AgentClient, d.Name)
 
 		// Create empty redirect snippet so nginx include doesn't fail
 		snippetPath := fmt.Sprintf("/etc/nginx/snippets/redirects-%s.conf", d.Name)
@@ -529,15 +519,7 @@ func (h *DomainHandler) Suspend(c *fiber.Ctx) error {
 			log.Printf("WARNING: failed to write suspended vhost for %s: %v", d.Name, err)
 		}
 
-		enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", d.Name)
-		_, err = h.AgentClient.Call("file_write", map[string]interface{}{
-			"path":    enabledPath,
-			"content": vhostContent,
-			"mode":    "0644",
-		})
-		if err != nil {
-			log.Printf("WARNING: failed to write sites-enabled suspended config for %s: %v", d.Name, err)
-		}
+		enableVhost(h.AgentClient, d.Name)
 
 		_, err = h.AgentClient.Call("nginx_reload", nil)
 		if err != nil {
@@ -923,7 +905,7 @@ func (h *DomainHandler) buildVhostData(d *domain.Domain) tmpl.NginxVhostData {
 	return data
 }
 
-// writeVhost renders and writes the nginx vhost to both sites-available and sites-enabled.
+// writeVhost renders and writes the nginx vhost to sites-available and symlinks sites-enabled.
 func (h *DomainHandler) writeVhost(d *domain.Domain) error {
 	vhostData := h.buildVhostData(d)
 	vhostContent, err := tmpl.RenderNginxVhost(vhostData)
@@ -931,26 +913,35 @@ func (h *DomainHandler) writeVhost(d *domain.Domain) error {
 		return fmt.Errorf("render vhost: %w", err)
 	}
 
-	for _, path := range []string{
-		fmt.Sprintf("/etc/nginx/sites-available/%s.conf", d.Name),
-		fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", d.Name),
-	} {
-		if _, err := h.AgentClient.Call("file_write", map[string]interface{}{
-			"path":    path,
-			"content": vhostContent,
-			"mode":    "0644",
-		}); err != nil {
-			log.Printf("WARNING: failed to write vhost to %s: %v", path, err)
-		}
+	availablePath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", d.Name)
+	if _, err := h.AgentClient.Call("file_write", map[string]interface{}{
+		"path":    availablePath,
+		"content": vhostContent,
+		"mode":    "0644",
+	}); err != nil {
+		log.Printf("WARNING: failed to write vhost to %s: %v", availablePath, err)
 	}
+	enableVhost(h.AgentClient, d.Name)
 
 	return nil
+}
+
+// enableVhost creates a symlink in sites-enabled pointing to sites-available.
+func enableVhost(agentClient *agent.Client, domainName string) {
+	available := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", domainName)
+	enabled := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", domainName)
+	if _, err := agentClient.Call("file_symlink", map[string]interface{}{
+		"target": available,
+		"link":   enabled,
+	}); err != nil {
+		log.Printf("WARNING: failed to symlink vhost for %s: %v", domainName, err)
+	}
 }
 
 // provisionDNSZone generates a BIND zone file from DNS records and registers
 // it in named.conf.local. All errors are logged but non-fatal.
 func provisionDNSZone(dnsSvc *dns.Service, domainSvc *domain.Service, agentClient *agent.Client, domainID int64, domainName string) {
-	zoneRecords, err := buildZoneRecords(dnsSvc, domainSvc, domainID, domainName)
+	zoneRecords, err := buildZoneRecords(dnsSvc, domainSvc, agentClient, domainID, domainName)
 	if err != nil {
 		log.Printf("WARNING: failed to build zone records for %s: %v", domainName, err)
 		return

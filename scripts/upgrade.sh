@@ -1046,6 +1046,23 @@ RCNGINX
     log "Roundcube Webmail ready"
 }
 
+# ── Convert sites-enabled copies to symlinks ──
+fix_sites_enabled_symlinks() {
+    log "Fixing sites-enabled symlinks..."
+    for f in /etc/nginx/sites-enabled/*.conf; do
+        [[ -f "$f" ]] || continue
+        [[ -L "$f" ]] && continue  # already a symlink
+        local name
+        name=$(basename "$f")
+        local target="/etc/nginx/sites-available/$name"
+        if [[ -f "$target" ]]; then
+            rm -f "$f"
+            ln -sf "$target" "$f"
+            log "  Converted $name to symlink"
+        fi
+    done
+}
+
 # ── Always-run fixups (run even when version matches) ──
 install_missing_packages
 fix_bind
@@ -1056,6 +1073,7 @@ setup_fail2ban
 setup_mail
 setup_spam_antivirus
 setup_roundcube
+fix_sites_enabled_symlinks
 
 # ── Run version-specific migrations ────────
 if [[ "$SKIP_BINARY" == false ]]; then

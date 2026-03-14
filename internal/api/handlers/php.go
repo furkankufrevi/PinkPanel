@@ -131,7 +131,6 @@ func (h *PHPHandler) UpdateDomainPHP(c *fiber.Ctx) error {
 		log.Error().Err(err).Msg("failed to render nginx vhost")
 	} else {
 		configPath := fmt.Sprintf("/etc/nginx/sites-available/%s.conf", dom.Name)
-		enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s.conf", dom.Name)
 		if _, err := h.AgentClient.Call("file_write", map[string]any{
 			"path":    configPath,
 			"content": vhostContent,
@@ -139,13 +138,7 @@ func (h *PHPHandler) UpdateDomainPHP(c *fiber.Ctx) error {
 		}); err != nil {
 			log.Error().Err(err).Msg("failed to write nginx vhost config")
 		}
-		if _, err := h.AgentClient.Call("file_write", map[string]any{
-			"path":    enabledPath,
-			"content": vhostContent,
-			"mode":    "0644",
-		}); err != nil {
-			log.Error().Err(err).Msg("failed to write nginx sites-enabled config")
-		}
+		enableVhost(h.AgentClient, dom.Name)
 		if _, err := h.AgentClient.Call("nginx_reload", nil); err != nil {
 			log.Error().Err(err).Msg("failed to reload nginx")
 		}
