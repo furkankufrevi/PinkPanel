@@ -9,6 +9,7 @@ import {
   Shield,
   ArrowUpCircle,
   Terminal,
+  LayoutTemplate,
   Settings,
 } from "lucide-react";
 import {
@@ -28,6 +29,7 @@ const navItems = [
   { path: "/backups", label: "Backups", icon: Archive },
   { path: "/logs", label: "Logs", icon: ScrollText },
   { path: "/terminal", label: "Terminal", icon: Terminal },
+  { path: "/dns-templates", label: "DNS Templates", icon: LayoutTemplate },
   { path: "/security", label: "Security", icon: Shield },
   { path: "/updates", label: "Updates", icon: ArrowUpCircle },
   { path: "/settings", label: "Settings", icon: Settings },

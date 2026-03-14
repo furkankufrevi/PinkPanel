@@ -2,11 +2,13 @@ import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { type ColumnDef } from "@tanstack/react-table";
-import { Plus, Pencil, Trash2, Globe, RotateCcw } from "lucide-react";
+import { Plus, Pencil, Trash2, Globe, RotateCcw, FileDown, LayoutTemplate } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/shared/data-table";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { DNSRecordSheet } from "./dns-record-sheet";
+import { ApplyTemplateDialog } from "./dns-apply-template";
+import { SaveTemplateDialog } from "./dns-save-template";
 import { listDNSRecords, deleteDNSRecord, resetDNSDefaults } from "@/api/dns";
 import { toast } from "sonner";
 import type { DNSRecord } from "@/types/dns";
@@ -34,6 +36,8 @@ export function DomainDNS() {
   const [editRecord, setEditRecord] = useState<DNSRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DNSRecord | null>(null);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [applyTemplateOpen, setApplyTemplateOpen] = useState(false);
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: ["dns-records", domainId],
@@ -153,6 +157,20 @@ export function DomainDNS() {
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
+            onClick={() => setSaveTemplateOpen(true)}
+          >
+            <FileDown className="mr-2 h-4 w-4" />
+            Save as Template
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => setApplyTemplateOpen(true)}
+          >
+            <LayoutTemplate className="mr-2 h-4 w-4" />
+            Apply Template
+          </Button>
+          <Button
+            variant="outline"
             onClick={() => setResetConfirmOpen(true)}
           >
             <RotateCcw className="mr-2 h-4 w-4" />
@@ -222,6 +240,21 @@ export function DomainDNS() {
         destructive
         loading={resetMutation.isPending}
         onConfirm={() => resetMutation.mutate()}
+      />
+
+      <ApplyTemplateDialog
+        open={applyTemplateOpen}
+        onOpenChange={setApplyTemplateOpen}
+        domainId={domainId}
+        onApplied={() => {
+          queryClient.invalidateQueries({ queryKey: ["dns-records", domainId] });
+        }}
+      />
+
+      <SaveTemplateDialog
+        open={saveTemplateOpen}
+        onOpenChange={setSaveTemplateOpen}
+        domainId={domainId}
       />
     </div>
   );

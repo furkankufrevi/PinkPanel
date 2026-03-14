@@ -37,6 +37,7 @@ const UsersPage = lazy(() => import("@/pages/users").then((m) => ({ default: m.U
 const SecurityPage = lazy(() => import("@/pages/security").then((m) => ({ default: m.SecurityPage })));
 const TerminalPage = lazy(() => import("@/pages/terminal").then((m) => ({ default: m.TerminalPage })));
 const UpdatesPage = lazy(() => import("@/pages/updates").then((m) => ({ default: m.UpdatesPage })));
+const DNSTemplatesPage = lazy(() => import("@/pages/dns-templates"));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -108,6 +109,7 @@ function App() {
                   <Route path="security" element={<SecurityPage />} />
                   <Route path="updates" element={<UpdatesPage />} />
                   <Route path="terminal" element={<TerminalPage />} />
+                  <Route path="dns-templates" element={<DNSTemplatesPage />} />
                   <Route path="settings" element={<SettingsPage />} />
                 </Route>
               </Routes>

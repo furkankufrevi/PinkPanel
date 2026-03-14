@@ -13,6 +13,7 @@ import {
   Users,
   ArrowUpCircle,
   Terminal,
+  LayoutTemplate,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUIStore } from "@/stores/ui";
@@ -35,6 +36,7 @@ const navItems: NavItem[] = [
   { path: "/logs", label: "Logs", icon: ScrollText },
   { path: "/users", label: "Users", icon: Users, adminOnly: true },
   { path: "/terminal", label: "Terminal", icon: Terminal, adminOnly: true },
+  { path: "/dns-templates", label: "DNS Templates", icon: LayoutTemplate, adminOnly: true },
   { path: "/security", label: "Security", icon: Shield, adminOnly: true },
   { path: "/updates", label: "Updates", icon: ArrowUpCircle, adminOnly: true },
   { path: "/settings", label: "Settings", icon: Settings },

@@ -43,7 +43,7 @@ import (
 //go:embed all:static
 var embeddedFiles embed.FS
 
-var version = "0.8.1-alpha"
+var version = "0.8.2-alpha"
 
 func main() {
 	// Parse flags
@@ -283,6 +283,16 @@ func main() {
 		AgentClient: agentClient,
 	}
 
+	// DNS template service & handler
+	dnsTemplateSvc := &dns.TemplateService{DB: database}
+	dnsTemplateHandler := &handlers.DNSTemplateHandler{
+		DB:          database,
+		TemplateSvc: dnsTemplateSvc,
+		DNSSvc:      dnsSvc,
+		DomainSvc:   domainSvc,
+		AgentClient: agentClient,
+	}
+
 	// Redirect service & handler
 	redirectSvc := &redirect.Service{DB: database}
 	redirectHandler := &handlers.RedirectHandler{
@@ -392,6 +402,17 @@ func main() {
 	protected.Post("/domains/:id/dns/reset", dnsHandler.ResetDefaults)
 	protected.Put("/dns/:id", dnsHandler.UpdateRecord)
 	protected.Delete("/dns/:id", dnsHandler.DeleteRecord)
+
+	// DNS template routes (import must come before :id to avoid param capture)
+	protected.Get("/dns/templates", dnsTemplateHandler.ListTemplates)
+	protected.Post("/dns/templates", dnsTemplateHandler.CreateTemplate)
+	protected.Post("/dns/templates/import", dnsTemplateHandler.ImportTemplate)
+	protected.Get("/dns/templates/:id", dnsTemplateHandler.GetTemplate)
+	protected.Put("/dns/templates/:id", dnsTemplateHandler.UpdateTemplate)
+	protected.Delete("/dns/templates/:id", dnsTemplateHandler.DeleteTemplate)
+	protected.Get("/dns/templates/:id/export", dnsTemplateHandler.ExportTemplate)
+	protected.Post("/domains/:id/dns/apply-template", dnsTemplateHandler.ApplyTemplate)
+	protected.Post("/domains/:id/dns/save-template", dnsTemplateHandler.SaveAsTemplate)
 
 	// PHP routes
 	protected.Get("/php/versions", phpHandler.GetVersions)
