@@ -520,19 +520,28 @@ func (h *AppHandler) installWordPress(appID int64, appDef *app.AppDefinition, do
 	logLine("Running WordPress installer...")
 	wpArgs := []string{
 		"core", "install",
-		"--url=" + dom.Name,
+		"--url=https://" + dom.Name,
 		"--title=" + req.SiteTitle,
 		"--admin_user=" + req.AdminUser,
 		"--admin_password=" + req.AdminPass,
 		"--admin_email=" + req.AdminEmail,
 		"--skip-email",
 	}
-	if _, err := h.AgentClient.Call("app_wpcli", map[string]any{
+	wpResp, wpErr := h.AgentClient.Call("app_wpcli", map[string]any{
 		"path":   installPath,
 		"run_as": systemUser,
 		"args":   wpArgs,
-	}); err != nil {
-		fail("WordPress install failed: " + err.Error())
+	})
+	// Log wp-cli output regardless of success/failure
+	if wpResp != nil {
+		if r, ok := wpResp.Result.(map[string]any); ok {
+			if v, ok := r["output"].(string); ok && v != "" {
+				logLine("wp-cli: " + v)
+			}
+		}
+	}
+	if wpErr != nil {
+		fail("WordPress install failed: " + wpErr.Error())
 		h.cleanupOnFailure(appDef, req)
 		return
 	}

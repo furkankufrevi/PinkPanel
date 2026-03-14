@@ -3672,17 +3672,20 @@ func cmdAppWPCLI(params json.RawMessage) (interface{}, error) {
 
 	cmd := exec.Command("sudo", cmdArgs...)
 	output, err := cmd.CombinedOutput()
-	exitCode := 0
+	outStr := strings.TrimSpace(string(output))
 	if err != nil {
+		exitCode := 1
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
-		} else {
-			return nil, fmt.Errorf("wp-cli exec error: %w", err)
 		}
+		return map[string]any{
+			"output":    outStr,
+			"exit_code": exitCode,
+		}, fmt.Errorf("wp-cli exited with code %d: %s", exitCode, outStr)
 	}
 
 	return map[string]any{
-		"output":    strings.TrimSpace(string(output)),
-		"exit_code": exitCode,
+		"output":    outStr,
+		"exit_code": 0,
 	}, nil
 }
