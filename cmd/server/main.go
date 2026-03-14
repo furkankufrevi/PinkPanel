@@ -419,6 +419,7 @@ func main() {
 	adminOnly.Get("/updates/check", updatesHandler.CheckForUpdates)
 	adminOnly.Get("/updates/releases", updatesHandler.GetReleases)
 	adminOnly.Post("/updates/upgrade", updatesHandler.TriggerUpgrade)
+	adminOnly.Get("/updates/upgrade/status", updatesHandler.GetUpgradeStatus)
 	adminOnly.Get("/updates/history", updatesHandler.GetUpgradeHistory)
 
 	// Security routes (admin+ only)

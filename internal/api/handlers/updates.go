@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -178,6 +181,95 @@ func (h *UpdatesHandler) TriggerUpgrade(c *fiber.Ctx) error {
 	db.LogActivity(h.DB, adminID, "system_upgrade", "system", 0, "upgrade started", c.IP())
 
 	return c.JSON(resp.Result)
+}
+
+// GetUpgradeStatus returns the current upgrade status and log output.
+// It finds the most recent upgrade log file and tails it.
+func (h *UpdatesHandler) GetUpgradeStatus(c *fiber.Ctx) error {
+	// Check if there's an in_progress upgrade in the DB
+	var status string
+	var prevVersion *string
+	err := h.DB.QueryRow(
+		"SELECT status, previous_version FROM version_history ORDER BY id DESC LIMIT 1",
+	).Scan(&status, &prevVersion)
+	if err != nil {
+		status = "idle"
+	}
+
+	// Find the most recent upgrade log
+	logDir := "/var/log/pinkpanel"
+	logContent := ""
+	logFile := ""
+
+	entries, err := os.ReadDir(logDir)
+	if err == nil {
+		var logFiles []string
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), "upgrade-") && strings.HasSuffix(e.Name(), ".log") {
+				logFiles = append(logFiles, e.Name())
+			}
+		}
+		if len(logFiles) > 0 {
+			sort.Strings(logFiles)
+			logFile = filepath.Join(logDir, logFiles[len(logFiles)-1])
+
+			// Read with offset support for incremental polling
+			offset := c.QueryInt("offset", 0)
+			data, err := os.ReadFile(logFile)
+			if err == nil {
+				content := string(data)
+				if offset > 0 && offset < len(content) {
+					content = content[offset:]
+				} else if offset >= len(content) {
+					content = ""
+				}
+				logContent = content
+			}
+		}
+	}
+
+	// Check if upgrade process is still running
+	running := false
+	if status == "in_progress" {
+		// Check if upgrade.sh is still running
+		resp, err := h.AgentClient.Call("exec_command", map[string]string{
+			"command": "pgrep -f 'bash.*upgrade.sh' || echo 'not_running'",
+		})
+		if err == nil {
+			if result, ok := resp.Result.(map[string]interface{}); ok {
+				if out, ok := result["output"].(string); ok {
+					running = !strings.Contains(out, "not_running")
+				}
+			}
+		}
+		// If not running, resolve the status
+		if !running {
+			// Read final log to determine success/failure
+			if strings.Contains(logContent, "Upgraded successfully") || strings.Contains(logContent, "is running") {
+				h.DB.Exec("UPDATE version_history SET status = 'completed' WHERE status = 'in_progress' ORDER BY id DESC LIMIT 1")
+				status = "completed"
+			} else if logContent != "" {
+				h.DB.Exec("UPDATE version_history SET status = 'failed' WHERE status = 'in_progress' ORDER BY id DESC LIMIT 1")
+				status = "failed"
+			}
+		}
+	}
+
+	// Get total log size for offset tracking
+	totalSize := 0
+	if logFile != "" {
+		if info, err := os.Stat(logFile); err == nil {
+			totalSize = int(info.Size())
+		}
+	}
+
+	return c.JSON(fiber.Map{
+		"status":     status,
+		"running":    running,
+		"log":        logContent,
+		"log_file":   logFile,
+		"total_size": totalSize,
+	})
 }
 
 // GetUpgradeHistory returns the version upgrade history.

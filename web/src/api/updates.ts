@@ -51,8 +51,28 @@ export async function getReleases(): Promise<ReleasesResponse> {
   return response.data;
 }
 
-export async function triggerUpgrade(): Promise<unknown> {
-  const response = await api.post("/updates/upgrade");
+export interface UpgradeResult {
+  status: string;
+  log_file: string;
+}
+
+export interface UpgradeStatus {
+  status: string;
+  running: boolean;
+  log: string;
+  log_file: string;
+  total_size: number;
+}
+
+export async function triggerUpgrade(): Promise<UpgradeResult> {
+  const response = await api.post<UpgradeResult>("/updates/upgrade");
+  return response.data;
+}
+
+export async function getUpgradeStatus(offset = 0): Promise<UpgradeStatus> {
+  const response = await api.get<UpgradeStatus>("/updates/upgrade/status", {
+    params: { offset },
+  });
   return response.data;
 }
 
