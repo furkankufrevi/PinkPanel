@@ -1096,6 +1096,196 @@ fix_sites_enabled_symlinks() {
     done
 }
 
+# ── Fix Postfix & Dovecot TLS to use mail.<domain> certificate ──
+fix_mail_tls_certs() {
+    # Find the primary domain from Postfix's myhostname
+    local mail_domain
+    mail_domain=$(postconf -h mydomain 2>/dev/null || true)
+    [[ -z "$mail_domain" ]] && return
+
+    local mail_host="mail.${mail_domain}"
+    local ssl_dir="/usr/local/pinkpanel/data/ssl/${mail_host}"
+    local cert_path="${ssl_dir}/fullchain.pem"
+    local key_path="${ssl_dir}/key.pem"
+
+    # Build fullchain from cert + chain if it doesn't exist yet
+    if [[ ! -f "$cert_path" ]] && [[ -f "${ssl_dir}/cert.pem" ]]; then
+        cat "${ssl_dir}/cert.pem" > "$cert_path"
+        [[ -f "${ssl_dir}/chain.pem" ]] && cat "${ssl_dir}/chain.pem" >> "$cert_path"
+    fi
+
+    # Only fix if mail.<domain> cert exists
+    if [[ ! -f "$cert_path" ]] || [[ ! -f "$key_path" ]]; then
+        warn "No SSL certificate found for ${mail_host} — skipping TLS cert fix"
+        return
+    fi
+
+    # Check if Postfix already points to the right cert
+    local current_cert
+    current_cert=$(postconf -h smtpd_tls_cert_file 2>/dev/null || true)
+    if [[ "$current_cert" == "$cert_path" ]]; then
+        return  # already correct
+    fi
+
+    log "Fixing Postfix TLS certs → ${mail_host}..."
+    postconf -e "smtpd_tls_cert_file=${cert_path}" 2>/dev/null || true
+    postconf -e "smtpd_tls_key_file=${key_path}" 2>/dev/null || true
+    postconf -e "smtpd_tls_security_level=may" 2>/dev/null || true
+    postconf -e "smtp_tls_security_level=may" 2>/dev/null || true
+    systemctl reload postfix > /dev/null 2>&1 || true
+
+    log "Fixing Dovecot TLS certs → ${mail_host}..."
+    cat > /etc/dovecot/conf.d/10-ssl.conf <<DOVESSL
+ssl = required
+ssl_cert = <${cert_path}
+ssl_key = <${key_path}
+ssl_min_protocol = TLSv1.2
+DOVESSL
+    systemctl reload dovecot > /dev/null 2>&1 || true
+
+    log "Mail TLS certs updated to ${mail_host}"
+}
+
+# ── Ensure DKIM DNS record exists in zone ──
+fix_dkim_dns_record() {
+    local mail_domain
+    mail_domain=$(postconf -h mydomain 2>/dev/null || true)
+    [[ -z "$mail_domain" ]] && return
+
+    local dkim_key_file="/etc/opendkim/keys/${mail_domain}/mail.txt"
+    [[ -f "$dkim_key_file" ]] || return
+
+    local zone_file="/etc/bind/zones/db.${mail_domain}"
+    [[ -f "$zone_file" ]] || return
+
+    # Check if DKIM record already in zone
+    if grep -q "_domainkey" "$zone_file" 2>/dev/null; then
+        return  # already present
+    fi
+
+    log "Injecting DKIM record into ${mail_domain} zone..."
+
+    # Extract the DKIM public key value from the key file
+    # mail.txt format: mail._domainkey IN TXT ( "v=DKIM1; ..." "..." )
+    local dkim_value
+    dkim_value=$(grep -oP '"[^"]*"' "$dkim_key_file" | tr -d '\n"' | sed 's/[[:space:]]\+//g')
+
+    if [[ -z "$dkim_value" ]]; then
+        warn "Could not parse DKIM key from ${dkim_key_file}"
+        return
+    fi
+
+    # Split into 255-char chunks for BIND TXT record compliance
+    local txt_parts=""
+    local remaining="$dkim_value"
+    while [[ ${#remaining} -gt 0 ]]; do
+        local chunk="${remaining:0:255}"
+        remaining="${remaining:255}"
+        if [[ -n "$txt_parts" ]]; then
+            txt_parts="${txt_parts} \"${chunk}\""
+        else
+            txt_parts="\"${chunk}\""
+        fi
+    done
+
+    # Count chunks to decide format
+    local chunk_count
+    chunk_count=$(echo "$txt_parts" | grep -o '"' | wc -l)
+    chunk_count=$((chunk_count / 2))
+
+    # Increment SOA serial
+    local current_serial
+    current_serial=$(grep -oP '\d{10}' "$zone_file" | head -1)
+    if [[ -n "$current_serial" ]]; then
+        local new_serial=$((current_serial + 1))
+        sed -i "s/${current_serial}/${new_serial}/" "$zone_file"
+    fi
+
+    # Append DKIM record to zone file
+    if [[ $chunk_count -gt 1 ]]; then
+        echo "mail._domainkey  3600  IN  TXT  ( ${txt_parts} )" >> "$zone_file"
+    else
+        echo "mail._domainkey  3600  IN  TXT  ${txt_parts}" >> "$zone_file"
+    fi
+
+    # Reload BIND zone
+    if named-checkzone "$mail_domain" "$zone_file" > /dev/null 2>&1; then
+        rndc reload "$mail_domain" > /dev/null 2>&1 || true
+        log "DKIM record added and zone reloaded for ${mail_domain}"
+    else
+        warn "Zone check failed after adding DKIM — reverting"
+        # Revert: remove the last line and restore serial
+        sed -i '$ d' "$zone_file"
+        [[ -n "$current_serial" ]] && sed -i "s/${new_serial}/${current_serial}/" "$zone_file"
+    fi
+}
+
+# ── Ensure ClamAV milter socket is actually created ──
+fix_clamav_milter_socket() {
+    # Skip if ClamAV not installed
+    command -v clamdscan &>/dev/null || return
+
+    local milter_sock="/var/spool/postfix/clamav/clamav-milter.sock"
+
+    # If socket exists and milter is running, nothing to do
+    if [[ -S "$milter_sock" ]] && systemctl is-active --quiet clamav-milter; then
+        return
+    fi
+
+    log "Fixing ClamAV milter socket..."
+
+    # Ensure directory exists with correct ownership
+    mkdir -p /var/spool/postfix/clamav
+    chown clamav:postfix /var/spool/postfix/clamav
+    chmod 755 /var/spool/postfix/clamav
+
+    # Ensure config points to correct socket path
+    if [[ -f /etc/clamav/clamav-milter.conf ]]; then
+        if ! grep -q "/var/spool/postfix/clamav/" /etc/clamav/clamav-milter.conf 2>/dev/null; then
+            cat > /etc/clamav/clamav-milter.conf <<'CMILTER'
+MilterSocket /var/spool/postfix/clamav/clamav-milter.sock
+MilterSocketMode 660
+MilterSocketGroup postfix
+FixStaleSocket true
+User clamav
+ClamdSocket unix:/run/clamav/clamd.ctl
+OnInfected Reject
+LogInfected Basic
+LogClean Off
+CMILTER
+        fi
+    fi
+
+    # Add clamav user to postfix group so it can write to the socket dir
+    usermod -aG postfix clamav 2>/dev/null || true
+
+    # Ensure clamd is running first
+    if ! systemctl is-active --quiet clamav-daemon; then
+        systemctl restart clamav-daemon > /dev/null 2>&1 || true
+        local retries=0
+        while [[ ! -S /run/clamav/clamd.ctl ]] && (( retries < 15 )); do
+            sleep 1
+            (( retries++ ))
+        done
+    fi
+
+    # Restart milter (not just enable — force it to re-create the socket)
+    systemctl restart clamav-milter > /dev/null 2>&1 || true
+
+    # Wait for the socket to appear
+    local retries=0
+    while [[ ! -S "$milter_sock" ]] && (( retries < 10 )); do
+        sleep 1
+        (( retries++ ))
+    done
+
+    if [[ -S "$milter_sock" ]]; then
+        log "ClamAV milter socket created at ${milter_sock}"
+    else
+        warn "ClamAV milter socket still missing — check: journalctl -u clamav-milter -n 20"
+    fi
+}
+
 # ── Always-run fixups (run even when version matches) ──
 install_missing_packages
 fix_bind
@@ -1107,6 +1297,9 @@ setup_mail
 setup_spam_antivirus
 setup_roundcube
 fix_sites_enabled_symlinks
+fix_mail_tls_certs
+fix_dkim_dns_record
+fix_clamav_milter_socket
 
 # ── Run version-specific migrations ────────
 if [[ "$SKIP_BINARY" == false ]]; then
