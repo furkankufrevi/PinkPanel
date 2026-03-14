@@ -29,6 +29,7 @@ import (
 	emailpkg "github.com/pinkpanel/pinkpanel/internal/core/email"
 	cronpkg "github.com/pinkpanel/pinkpanel/internal/core/cron"
 	"github.com/pinkpanel/pinkpanel/internal/core/monitor"
+	"github.com/pinkpanel/pinkpanel/internal/core/redirect"
 	gitpkg "github.com/pinkpanel/pinkpanel/internal/core/git"
 	sslpkg "github.com/pinkpanel/pinkpanel/internal/core/ssl"
 	"github.com/pinkpanel/pinkpanel/internal/core/user"
@@ -42,7 +43,7 @@ import (
 //go:embed all:static
 var embeddedFiles embed.FS
 
-var version = "0.8.0-alpha"
+var version = "0.8.1-alpha"
 
 func main() {
 	// Parse flags
@@ -282,6 +283,15 @@ func main() {
 		AgentClient: agentClient,
 	}
 
+	// Redirect service & handler
+	redirectSvc := &redirect.Service{DB: database}
+	redirectHandler := &handlers.RedirectHandler{
+		DB:          database,
+		RedirectSvc: redirectSvc,
+		DomainSvc:   domainSvc,
+		AgentClient: agentClient,
+	}
+
 	// Monitor service & handler
 	monitorSvc := &monitor.Service{
 		DB:          database,
@@ -352,6 +362,20 @@ func main() {
 		return fiber.ErrUpgradeRequired
 	})
 	api.Get("/dashboard/live", fiberws.New(wsHub.HandleConnection))
+
+	// Terminal WebSocket (auth via query param, not middleware)
+	terminalHandler := &handlers.TerminalHandler{
+		AgentSocketPath: cfg.Agent.Socket,
+		JWTManager:      jwtManager,
+		AgentClient:     agentClient,
+	}
+	api.Use("/terminal/ws", func(c *fiber.Ctx) error {
+		if fiberws.IsWebSocketUpgrade(c) {
+			return c.Next()
+		}
+		return fiber.ErrUpgradeRequired
+	})
+	api.Get("/terminal/ws", fiberws.New(terminalHandler.HandleTerminal))
 
 	// Domain routes
 	protected.Get("/domains", domainHandler.List)
@@ -502,6 +526,13 @@ func main() {
 	protected.Delete("/crons/:id", cronHandler.Delete)
 	protected.Post("/crons/:id/run", cronHandler.RunNow)
 	protected.Get("/crons/:id/logs", cronHandler.GetLogs)
+
+	// Redirect routes
+	protected.Get("/domains/:id/redirects", redirectHandler.List)
+	protected.Post("/domains/:id/redirects", redirectHandler.Create)
+	protected.Get("/redirects/:id", redirectHandler.Get)
+	protected.Put("/redirects/:id", redirectHandler.Update)
+	protected.Delete("/redirects/:id", redirectHandler.Delete)
 
 	// Git webhook (public, no auth)
 	api.Post("/git/webhook/:secret", gitHandler.WebhookHandler)

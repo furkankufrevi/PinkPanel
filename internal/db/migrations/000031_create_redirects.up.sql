@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS redirects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain_id INTEGER NOT NULL REFERENCES domains(id) ON DELETE CASCADE,
+    source_path TEXT NOT NULL,
+    target_url TEXT NOT NULL,
+    redirect_type INTEGER NOT NULL DEFAULT 301,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_redirects_domain ON redirects(domain_id);

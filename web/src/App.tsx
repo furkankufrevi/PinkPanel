@@ -24,6 +24,7 @@ const DomainDatabases = lazy(() => import("@/pages/domains/detail/databases").th
 const DomainFTP = lazy(() => import("@/pages/domains/detail/ftp").then((m) => ({ default: m.DomainFTP })));
 const DomainEmail = lazy(() => import("@/pages/domains/detail/email").then((m) => ({ default: m.DomainEmail })));
 const DomainCrons = lazy(() => import("@/pages/domains/detail/crons").then((m) => ({ default: m.DomainCrons })));
+const DomainRedirects = lazy(() => import("@/pages/domains/detail/redirects").then((m) => ({ default: m.DomainRedirects })));
 const DomainGit = lazy(() => import("@/pages/domains/detail/git").then((m) => ({ default: m.DomainGit })));
 const DomainBackups = lazy(() => import("@/pages/domains/detail/backups").then((m) => ({ default: m.DomainBackups })));
 const DomainLogs = lazy(() => import("@/pages/domains/detail/logs").then((m) => ({ default: m.DomainLogs })));
@@ -34,6 +35,7 @@ const LogsPage = lazy(() => import("@/pages/logs").then((m) => ({ default: m.Log
 const SettingsPage = lazy(() => import("@/pages/settings").then((m) => ({ default: m.SettingsPage })));
 const UsersPage = lazy(() => import("@/pages/users").then((m) => ({ default: m.UsersPage })));
 const SecurityPage = lazy(() => import("@/pages/security").then((m) => ({ default: m.SecurityPage })));
+const TerminalPage = lazy(() => import("@/pages/terminal").then((m) => ({ default: m.TerminalPage })));
 const UpdatesPage = lazy(() => import("@/pages/updates").then((m) => ({ default: m.UpdatesPage })));
 
 const queryClient = new QueryClient({
@@ -92,6 +94,7 @@ function App() {
                     <Route path="ftp" element={<DomainFTP />} />
                     <Route path="email" element={<DomainEmail />} />
                     <Route path="crons" element={<DomainCrons />} />
+                    <Route path="redirects" element={<DomainRedirects />} />
                     <Route path="git" element={<DomainGit />} />
                     <Route path="logs" element={<DomainLogs />} />
                     <Route path="backups" element={<DomainBackups />} />
@@ -104,6 +107,7 @@ function App() {
                   <Route path="users" element={<UsersPage />} />
                   <Route path="security" element={<SecurityPage />} />
                   <Route path="updates" element={<UpdatesPage />} />
+                  <Route path="terminal" element={<TerminalPage />} />
                   <Route path="settings" element={<SettingsPage />} />
                 </Route>
               </Routes>
