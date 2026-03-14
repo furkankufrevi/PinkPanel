@@ -6,6 +6,11 @@ import type {
   UpdateGitRepoRequest,
 } from "@/types/git";
 
+export async function getSSHKey() {
+  const { data } = await api.get<{ public_key: string }>("/git/ssh-key");
+  return data;
+}
+
 export async function listGitRepos(domainId: number) {
   const { data } = await api.get<{ data: GitRepository[] }>(
     `/domains/${domainId}/git`

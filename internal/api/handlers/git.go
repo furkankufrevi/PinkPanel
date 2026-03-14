@@ -357,3 +357,16 @@ func (h *GitHandler) runDeploy(repo *git.Repository, deploymentID int64) {
 	h.GitSvc.UpdateDeployment(deploymentID, "completed", commitHash, allLogs, duration)
 	h.GitSvc.UpdateLastDeploy(repo.ID, commitHash)
 }
+
+// GetSSHKey returns the server's SSH public key (generates one if needed).
+func (h *GitHandler) GetSSHKey(c *fiber.Ctx) error {
+	resp, err := h.AgentClient.Call("git_ssh_key", nil)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "agent_error", "message": err.Error()}})
+	}
+	result, ok := resp.Result.(map[string]interface{})
+	if !ok {
+		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "agent_error", "message": "unexpected response"}})
+	}
+	return c.JSON(fiber.Map{"public_key": result["public_key"]})
+}

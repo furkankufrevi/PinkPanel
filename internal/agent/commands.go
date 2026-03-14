@@ -152,6 +152,7 @@ func (r *CommandRegistry) registerBuiltins() {
 	r.commands["git_deploy"] = cmdGitDeploy
 	r.commands["git_log"] = cmdGitLog
 	r.commands["git_setup_hook"] = cmdGitSetupHook
+	r.commands["git_ssh_key"] = cmdGitSSHKey
 }
 
 // ---------- Param types ----------
@@ -3216,6 +3217,29 @@ curl -s -X POST "%s" > /dev/null 2>&1 &
 	}
 
 	return map[string]any{"status": "ok"}, nil
+}
+
+func cmdGitSSHKey(_ json.RawMessage) (interface{}, error) {
+	keyPath := "/root/.ssh/id_ed25519"
+	pubPath := keyPath + ".pub"
+
+	// Generate key if it doesn't exist
+	if _, err := os.Stat(pubPath); os.IsNotExist(err) {
+		if err := os.MkdirAll("/root/.ssh", 0700); err != nil {
+			return nil, fmt.Errorf("creating .ssh directory: %w", err)
+		}
+		out, err := exec.Command("ssh-keygen", "-t", "ed25519", "-f", keyPath, "-N", "", "-C", "pinkpanel@server").CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("generating SSH key: %s", strings.TrimSpace(string(out)))
+		}
+	}
+
+	pubKey, err := os.ReadFile(pubPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading public key: %w", err)
+	}
+
+	return map[string]any{"public_key": strings.TrimSpace(string(pubKey))}, nil
 }
 
 func escapeMySQLString(s string) string {

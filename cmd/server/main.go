@@ -460,6 +460,7 @@ func main() {
 	adminOnly.Put("/email/clamav", emailHandler.ToggleClamAV)
 
 	// Git routes
+	protected.Get("/git/ssh-key", gitHandler.GetSSHKey)
 	protected.Get("/domains/:id/git", gitHandler.ListRepos)
 	protected.Post("/domains/:id/git", gitHandler.CreateRepo)
 	protected.Get("/domains/:id/git/:repoId", gitHandler.GetRepo)

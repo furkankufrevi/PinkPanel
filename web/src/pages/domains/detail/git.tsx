@@ -32,6 +32,7 @@ import {
   updateGitRepo,
   triggerDeploy,
   listDeployments,
+  getSSHKey,
 } from "@/api/git";
 import type { GitRepository, GitDeployment } from "@/types/git";
 import type { AxiosError } from "axios";
@@ -51,6 +52,7 @@ import {
   HardDrive,
   Rocket,
   Download,
+  Key,
   ChevronDown,
   ChevronRight,
   FolderSync,
@@ -80,6 +82,7 @@ export function DomainGit() {
   const [newDeployPath, setNewDeployPath] = useState("");
   const [newPostDeployCmd, setNewPostDeployCmd] = useState("");
   const [showPostDeploy, setShowPostDeploy] = useState(false);
+  const [showSSHKey, setShowSSHKey] = useState(false);
 
   // Edit form state
   const [editBranch, setEditBranch] = useState("");
@@ -97,6 +100,12 @@ export function DomainGit() {
     queryKey: ["git-repos", domainId],
     queryFn: () => listGitRepos(domainId),
     enabled: !!domainId,
+  });
+
+  const { data: sshKeyData, isLoading: sshKeyLoading } = useQuery({
+    queryKey: ["git-ssh-key"],
+    queryFn: getSSHKey,
+    enabled: showSSHKey,
   });
 
   const createMutation = useMutation({
@@ -200,17 +209,61 @@ export function DomainGit() {
             Deploy code from Git repositories to {domainName || "this domain"}
           </p>
         </div>
-        <Button
-          onClick={() => {
-            resetCreateForm();
-            setShowCreate(true);
-          }}
-          className="bg-pink-500 hover:bg-pink-600"
-        >
-          <Plus className="h-4 w-4 mr-1.5" />
-          Add Repository
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={() => setShowSSHKey(!showSSHKey)}
+          >
+            <Key className="h-4 w-4 mr-1.5" />
+            SSH Key
+          </Button>
+          <Button
+            onClick={() => {
+              resetCreateForm();
+              setShowCreate(true);
+            }}
+            className="bg-pink-500 hover:bg-pink-600"
+          >
+            <Plus className="h-4 w-4 mr-1.5" />
+            Add Repository
+          </Button>
+        </div>
       </div>
+
+      {/* SSH Key Banner */}
+      {showSSHKey && (
+        <Card className="border-blue-500/30 bg-blue-500/5">
+          <CardContent className="py-4">
+            <div className="flex items-start gap-3">
+              <Key className="h-5 w-5 text-blue-500 mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium mb-1">Server SSH Public Key</p>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Add this key to your Git provider (GitHub → Settings → SSH Keys) to allow the server to clone private repositories.
+                </p>
+                {sshKeyLoading ? (
+                  <Skeleton className="h-16 w-full" />
+                ) : sshKeyData?.public_key ? (
+                  <div className="flex gap-2">
+                    <code className="flex-1 text-xs bg-black/30 rounded px-3 py-2 font-mono break-all select-all">
+                      {sshKeyData.public_key}
+                    </code>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => copyToClipboard(sshKeyData.public_key)}
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-red-400">Failed to load SSH key</p>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Repository Grid */}
       {repos.length === 0 ? (
