@@ -692,6 +692,11 @@ non_smtpd_milters = inet:localhost:8891
 # Limits
 mailbox_size_limit = 0
 message_size_limit = 52428800
+
+# Rate limiting (prevent abuse if accounts get compromised)
+smtpd_client_message_rate_limit = 100
+smtpd_client_recipient_rate_limit = 500
+anvil_rate_time_unit = 3600s
 POSTFIX
 
     # ── Postfix master.cf: enable submission port ──

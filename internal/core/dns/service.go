@@ -219,6 +219,10 @@ func (s *Service) CreateDefaultRecords(domainID int64, domainName, serverIP, ser
 		{"TXT", "@", spf, 3600, nil},
 		// DMARC
 		{"TXT", "_dmarc", fmt.Sprintf("v=DMARC1; p=quarantine; rua=mailto:postmaster@%s", domainName), 3600, nil},
+		// Mail autodiscovery SRV records
+		{"SRV", "_imaps._tcp", fmt.Sprintf("0 993 mail.%s.", domainName), 3600, &mx10},
+		{"SRV", "_submission._tcp", fmt.Sprintf("0 587 mail.%s.", domainName), 3600, &mx10},
+		{"SRV", "_autodiscover._tcp", fmt.Sprintf("0 443 mail.%s.", domainName), 3600, &mx10},
 	}
 
 	// Add AAAA records if IPv6 is available

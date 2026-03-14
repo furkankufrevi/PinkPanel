@@ -150,8 +150,8 @@ func (h *SSLHandler) InstallCertificate(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "internal_error", "message": err.Error()}})
 	}
 
-	// Update NGINX vhost with SSL
-	h.updateNginxWithSSL(dom, certPath, keyPath, chainPath, req.ForceHTTPS, true)
+	// Update NGINX vhost with SSL (HSTS off by default)
+	h.updateNginxWithSSL(dom, certPath, keyPath, chainPath, req.ForceHTTPS, false)
 
 	adminID, _ := c.Locals("admin_id").(int64)
 	db.LogActivity(h.DB, adminID, "install_ssl", "domain", domainID, fmt.Sprintf("custom SSL for %s", dom.Name), c.IP())
@@ -268,7 +268,7 @@ func (h *SSLHandler) IssueLetsEncrypt(c *fiber.Ctx) error {
 
 	// Store in database with new fields
 	cert, err := h.SSLSvc.Install(domainID, "letsencrypt", certPath, keyPath, chainPath, issued.Issuer, issued.Domains, issued.ExpiresAt, true, ssl.InstallOpts{
-		HSTS:          true,
+		HSTS:          false,
 		MailSSL:       req.AssignToMail,
 		ChallengeType: challengeType,
 	})
@@ -287,8 +287,8 @@ func (h *SSLHandler) IssueLetsEncrypt(c *fiber.Ctx) error {
 		}
 	}
 
-	// Update NGINX with SSL
-	h.updateNginxWithSSL(dom, certPath, keyPath, chainPath, true, true)
+	// Update NGINX with SSL (HSTS off by default, user can enable via toggle)
+	h.updateNginxWithSSL(dom, certPath, keyPath, chainPath, true, false)
 
 	adminID, _ := c.Locals("admin_id").(int64)
 	db.LogActivity(h.DB, adminID, "issue_ssl", "domain", domainID, fmt.Sprintf("Let's Encrypt for %s", issued.Domains), c.IP())

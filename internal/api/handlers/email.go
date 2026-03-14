@@ -106,6 +106,9 @@ func (h *EmailHandler) CreateAccount(c *fiber.Ctx) error {
 	// Auto-setup DKIM + OpenDKIM tables for this domain if not already done
 	go h.ensureDKIM(domainID, dom.Name)
 
+	// Auto-setup RFC 5321 required forwarders (postmaster@, abuse@) on first account
+	go h.ensureRFCForwarders(domainID, req.Address+"@"+dom.Name)
+
 	adminID, _ := c.Locals("admin_id").(int64)
 	db.LogActivity(h.DB, adminID, "create_email_account", "email", account.ID, req.Address+"@"+dom.Name, c.IP())
 
@@ -550,6 +553,41 @@ func (h *EmailHandler) ensureDKIM(domainID int64, domainName string) {
 	// Regenerate zone
 	h.regenerateZone(domainID, domainName)
 	log.Info().Str("domain", domainName).Msg("DKIM key generated and DNS record published")
+}
+
+// ensureRFCForwarders creates postmaster@ and abuse@ forwarders for a domain
+// if they don't already exist (RFC 5321 requirement). The first email account
+// created for the domain is used as the destination.
+func (h *EmailHandler) ensureRFCForwarders(domainID int64, firstAccountEmail string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error().Interface("panic", r).Msg("panic in ensureRFCForwarders")
+		}
+	}()
+
+	// Check existing forwarders
+	forwarders, _ := h.EmailSvc.ListForwarders(domainID)
+	existing := make(map[string]bool)
+	for _, f := range forwarders {
+		existing[f.SourceAddress] = true
+	}
+
+	created := false
+	for _, alias := range []string{"postmaster", "abuse"} {
+		if existing[alias] {
+			continue
+		}
+		if _, err := h.EmailSvc.CreateForwarder(domainID, alias, firstAccountEmail); err != nil {
+			log.Error().Err(err).Str("alias", alias).Msg("failed to create RFC forwarder")
+			continue
+		}
+		created = true
+		log.Info().Str("alias", alias).Str("destination", firstAccountEmail).Msg("RFC forwarder created")
+	}
+
+	if created {
+		h.syncVirtualMaps()
+	}
 }
 
 // ---------- Mail Queue ----------
