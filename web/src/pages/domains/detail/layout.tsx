@@ -29,6 +29,7 @@ const subPageLabels: Record<string, string> = {
   crons: "Cron Jobs",
   git: "Git",
   logs: "Logs",
+  apps: "Applications",
 };
 
 export function DomainDetailLayout() {

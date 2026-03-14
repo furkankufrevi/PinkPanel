@@ -27,6 +27,7 @@ import (
 	"github.com/pinkpanel/pinkpanel/internal/core/backup"
 	"github.com/pinkpanel/pinkpanel/internal/core/ftp"
 	emailpkg "github.com/pinkpanel/pinkpanel/internal/core/email"
+	apppkg "github.com/pinkpanel/pinkpanel/internal/core/app"
 	cronpkg "github.com/pinkpanel/pinkpanel/internal/core/cron"
 	"github.com/pinkpanel/pinkpanel/internal/core/monitor"
 	"github.com/pinkpanel/pinkpanel/internal/core/redirect"
@@ -43,7 +44,7 @@ import (
 //go:embed all:static
 var embeddedFiles embed.FS
 
-var version = "0.8.12-alpha"
+var version = "0.9.0-alpha"
 
 func main() {
 	// Parse flags
@@ -302,6 +303,17 @@ func main() {
 		AgentClient: agentClient,
 	}
 
+	// App service & handler
+	appSvc := &apppkg.Service{DB: database}
+	appHandler := &handlers.AppHandler{
+		DB:          database,
+		AppSvc:      appSvc,
+		DomainSvc:   domainSvc,
+		DBSvc:       dbSvc,
+		UserSvc:     userSvc,
+		AgentClient: agentClient,
+	}
+
 	// Monitor service & handler
 	monitorSvc := &monitor.Service{
 		DB:          database,
@@ -554,6 +566,17 @@ func main() {
 	protected.Get("/redirects/:id", redirectHandler.Get)
 	protected.Put("/redirects/:id", redirectHandler.Update)
 	protected.Delete("/redirects/:id", redirectHandler.Delete)
+
+	// App installer routes
+	protected.Get("/apps/catalog", appHandler.Catalog)
+	protected.Get("/domains/:id/apps", appHandler.ListInstalled)
+	protected.Post("/domains/:id/apps/install", appHandler.Install)
+	protected.Get("/apps/:id", appHandler.Get)
+	protected.Delete("/apps/:id", appHandler.Uninstall)
+	protected.Post("/apps/:id/update", appHandler.Update)
+	protected.Get("/apps/:id/logs", appHandler.GetLogs)
+	protected.Get("/apps/:id/wp/info", appHandler.WPInfo)
+	protected.Post("/apps/:id/wp/maintenance", appHandler.WPMaintenance)
 
 	// Git webhook (public, no auth)
 	api.Post("/git/webhook/:secret", gitHandler.WebhookHandler)

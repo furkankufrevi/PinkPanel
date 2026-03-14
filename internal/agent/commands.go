@@ -162,6 +162,10 @@ func (r *CommandRegistry) registerBuiltins() {
 	// Monitoring
 	r.commands["domain_disk_usage"] = cmdDomainDiskUsage
 	r.commands["domain_bandwidth"] = cmdDomainBandwidth
+
+	// App installer
+	r.commands["app_download"] = cmdAppDownload
+	r.commands["app_wpcli"] = cmdAppWPCLI
 }
 
 // ---------- Param types ----------
@@ -3535,4 +3539,150 @@ func escapeMySQLString(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "'", "\\'")
 	return s
+}
+
+// ---------- App installer commands ----------
+
+type appDownloadParams struct {
+	URL    string `json:"url"`
+	Dest   string `json:"dest"`
+	Format string `json:"format"`
+	Subdir string `json:"subdir"`
+}
+
+func cmdAppDownload(params json.RawMessage) (interface{}, error) {
+	var p appDownloadParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if p.URL == "" {
+		return nil, fmt.Errorf("url is required")
+	}
+	if err := validatePath(p.Dest); err != nil {
+		return nil, err
+	}
+
+	// Determine temp file extension
+	ext := "tar.gz"
+	if p.Format == "zip" {
+		ext = "zip"
+	}
+	tmpFile := fmt.Sprintf("/tmp/app-download-%d.%s", time.Now().UnixNano(), ext)
+	defer os.Remove(tmpFile)
+
+	// Download
+	out, err := exec.Command("wget", "-q", "-O", tmpFile, p.URL).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("download failed: %s", strings.TrimSpace(string(out)))
+	}
+
+	// Ensure destination directory exists
+	if err := os.MkdirAll(p.Dest, 0755); err != nil {
+		return nil, fmt.Errorf("creating destination: %w", err)
+	}
+
+	// Extract
+	if p.Format == "zip" {
+		out, err = exec.Command("unzip", "-o", "-q", tmpFile, "-d", p.Dest).CombinedOutput()
+	} else {
+		out, err = exec.Command("tar", "-xzf", tmpFile, "-C", p.Dest).CombinedOutput()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("extract failed: %s", strings.TrimSpace(string(out)))
+	}
+
+	// Move subdir contents up if specified
+	subdir := p.Subdir
+	if subdir == "auto" {
+		// Auto-detect: find the single top-level directory
+		entries, _ := os.ReadDir(p.Dest)
+		dirs := []string{}
+		for _, e := range entries {
+			if e.IsDir() {
+				dirs = append(dirs, e.Name())
+			}
+		}
+		if len(dirs) == 1 {
+			subdir = dirs[0]
+		} else {
+			subdir = ""
+		}
+	}
+
+	if subdir != "" {
+		subdirPath := filepath.Join(p.Dest, subdir)
+		if info, err := os.Stat(subdirPath); err == nil && info.IsDir() {
+			// Move contents from subdir to dest
+			entries, _ := os.ReadDir(subdirPath)
+			for _, e := range entries {
+				src := filepath.Join(subdirPath, e.Name())
+				dst := filepath.Join(p.Dest, e.Name())
+				if err := os.Rename(src, dst); err != nil {
+					// Fallback to cp + rm for cross-device moves
+					cpOut, cpErr := exec.Command("cp", "-a", src, dst).CombinedOutput()
+					if cpErr != nil {
+						return nil, fmt.Errorf("moving %s: %s", e.Name(), strings.TrimSpace(string(cpOut)))
+					}
+					os.RemoveAll(src)
+				}
+			}
+			os.Remove(subdirPath)
+		}
+	}
+
+	return map[string]string{"status": "ok"}, nil
+}
+
+type appWPCLIParams struct {
+	Path  string   `json:"path"`
+	Args  []string `json:"args"`
+	RunAs string   `json:"run_as"`
+}
+
+func cmdAppWPCLI(params json.RawMessage) (interface{}, error) {
+	var p appWPCLIParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if err := validatePath(p.Path); err != nil {
+		return nil, err
+	}
+	if p.RunAs == "" {
+		p.RunAs = "www-data"
+	}
+	if !safeNameRe.MatchString(p.RunAs) {
+		return nil, fmt.Errorf("invalid run_as user: %s", p.RunAs)
+	}
+
+	wpBin := "/usr/local/bin/wp"
+
+	// Auto-install wp-cli if missing
+	if _, err := os.Stat(wpBin); os.IsNotExist(err) {
+		dlOut, dlErr := exec.Command("wget", "-q", "-O", wpBin,
+			"https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar").CombinedOutput()
+		if dlErr != nil {
+			return nil, fmt.Errorf("failed to download wp-cli: %s", strings.TrimSpace(string(dlOut)))
+		}
+		os.Chmod(wpBin, 0755)
+	}
+
+	// Build command: sudo -u {run_as} wp --path={path} {args...}
+	cmdArgs := []string{"-u", p.RunAs, wpBin, "--path=" + p.Path}
+	cmdArgs = append(cmdArgs, p.Args...)
+
+	cmd := exec.Command("sudo", cmdArgs...)
+	output, err := cmd.CombinedOutput()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return nil, fmt.Errorf("wp-cli exec error: %w", err)
+		}
+	}
+
+	return map[string]any{
+		"output":    strings.TrimSpace(string(output)),
+		"exit_code": exitCode,
+	}, nil
 }

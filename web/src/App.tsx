@@ -26,6 +26,7 @@ const DomainEmail = lazy(() => import("@/pages/domains/detail/email").then((m) =
 const DomainCrons = lazy(() => import("@/pages/domains/detail/crons").then((m) => ({ default: m.DomainCrons })));
 const DomainRedirects = lazy(() => import("@/pages/domains/detail/redirects").then((m) => ({ default: m.DomainRedirects })));
 const DomainGit = lazy(() => import("@/pages/domains/detail/git").then((m) => ({ default: m.DomainGit })));
+const DomainApps = lazy(() => import("@/pages/domains/detail/apps").then((m) => ({ default: m.DomainApps })));
 const DomainBackups = lazy(() => import("@/pages/domains/detail/backups").then((m) => ({ default: m.DomainBackups })));
 const DomainLogs = lazy(() => import("@/pages/domains/detail/logs").then((m) => ({ default: m.DomainLogs })));
 const FilesPage = lazy(() => import("@/pages/files").then((m) => ({ default: m.FilesPage })));
@@ -98,6 +99,7 @@ function App() {
                     <Route path="redirects" element={<DomainRedirects />} />
                     <Route path="git" element={<DomainGit />} />
                     <Route path="logs" element={<DomainLogs />} />
+                    <Route path="apps" element={<DomainApps />} />
                     <Route path="backups" element={<DomainBackups />} />
                     <Route path="settings" element={<DomainSettings />} />
                   </Route>

@@ -359,6 +359,7 @@ PMA
 install_missing_packages() {
     local missing=()
     command -v git &>/dev/null || missing+=("git")
+    command -v wget &>/dev/null || missing+=("wget")
     command -v zip &>/dev/null || missing+=("zip")
     command -v unzip &>/dev/null || missing+=("unzip")
     command -v fail2ban-client &>/dev/null || missing+=("fail2ban")

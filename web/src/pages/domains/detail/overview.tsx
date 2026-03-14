@@ -14,6 +14,7 @@ import {
   ExternalLink,
   Mail,
   RefreshCw,
+  Package,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -220,6 +221,14 @@ function buildCategories(domain: Domain, sslInstalled: boolean): Category[] {
 
   // Dev Tools
   const devTools: FeatureItem[] = [
+    {
+      title: "Applications",
+      subtitle: "WordPress, Joomla...",
+      icon: Package,
+      color: "text-pink-500",
+      bg: "bg-pink-500/10",
+      route: `/domains/${id}/apps`,
+    },
     {
       title: "PHP",
       subtitle: `Version ${domain.php_version}`,
