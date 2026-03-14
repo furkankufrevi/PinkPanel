@@ -931,7 +931,6 @@ curl_setopt_array($ch, [
     CURLOPT_COOKIEFILE     => $cookieJar,
     CURLOPT_FOLLOWLOCATION => true,
     CURLOPT_TIMEOUT        => 10,
-    CURLOPT_HTTPHEADER     => ['Host: ' . $_SERVER['HTTP_HOST']],
 ]);
 $loginPage = curl_exec($ch);
 $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -950,6 +949,8 @@ if (!preg_match('/name="_token"\s+value="([^"]+)"/', $loginPage, $m)) {
 $csrfToken = $m[1];
 
 // Step 2: POST login with credentials + CSRF token
+// Capture Set-Cookie headers from response (sessauth is not in cookie jar)
+$responseCookies = [];
 $ch = curl_init();
 curl_setopt_array($ch, [
     CURLOPT_URL            => $rcBase . '?_task=login&_action=login',
@@ -966,33 +967,34 @@ curl_setopt_array($ch, [
     CURLOPT_COOKIEJAR      => $cookieJar,
     CURLOPT_COOKIEFILE     => $cookieJar,
     CURLOPT_FOLLOWLOCATION => false,
-    CURLOPT_HEADER         => true,
     CURLOPT_TIMEOUT        => 10,
-    CURLOPT_HTTPHEADER     => ['Host: ' . $_SERVER['HTTP_HOST']],
+    CURLOPT_HEADERFUNCTION => function($ch, $header) use (&$responseCookies) {
+        if (stripos($header, 'Set-Cookie:') === 0) {
+            $cookiePart = trim(substr($header, 11));
+            $nameValue = explode(';', $cookiePart)[0];
+            $eq = strpos($nameValue, '=');
+            if ($eq !== false) {
+                $name = trim(substr($nameValue, 0, $eq));
+                $value = trim(substr($nameValue, $eq + 1));
+                $responseCookies[$name] = $value;
+            }
+        }
+        return strlen($header);
+    },
 ]);
 $response = curl_exec($ch);
+$loginHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 curl_close($ch);
-
-// Extract the authenticated session cookie from the cookie jar
-$sessionCookie = '';
-if (file_exists($cookieJar)) {
-    $lines = file($cookieJar, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    foreach ($lines as $line) {
-        if ($line[0] === '#') continue;
-        $parts = explode("\t", $line);
-        if (count($parts) >= 7 && stripos($parts[5], 'sessid') !== false) {
-            $sessionCookie = $parts[5] . '=' . $parts[6];
-            setcookie($parts[5], $parts[6], 0, '/roundcube/', '', true, true);
-        }
-        if (count($parts) >= 7 && stripos($parts[5], 'sessauth') !== false) {
-            setcookie($parts[5], $parts[6], 0, '/roundcube/', '', true, true);
-        }
-    }
-}
 @unlink($cookieJar);
 
-if (!$sessionCookie) {
+// 302 redirect = login succeeded
+if ($loginHttpCode !== 302) {
     die('Roundcube login failed — check email credentials. You may need to change the password in the panel first.');
+}
+
+// Forward all session cookies to the browser
+foreach ($responseCookies as $name => $value) {
+    setcookie($name, $value, 0, '/roundcube/', '', true, true);
 }
 
 // Step 3: Redirect to authenticated Roundcube session
