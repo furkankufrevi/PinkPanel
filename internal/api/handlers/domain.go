@@ -258,7 +258,7 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 			}
 		}
 		// Regenerate parent zone to include the new subdomain records
-		provisionDNSZone(h.DNSSvc, h.AgentClient, parentDomain.ID, parentDomain.Name)
+		provisionDNSZone(h.DNSSvc, h.DomainSvc, h.AgentClient, parentDomain.ID, parentDomain.Name)
 		// Clean up any stale separate zone for this subdomain (from previous creation/toggle)
 		h.AgentClient.Call("dns_remove_zone", map[string]interface{}{"domain": d.Name})
 		h.AgentClient.Call("dns_reload", nil)
@@ -267,7 +267,7 @@ func (h *DomainHandler) Create(c *fiber.Ctx) error {
 		if err := h.DNSSvc.CreateDefaultRecords(d.ID, d.Name, serverIP, serverIPv6); err != nil {
 			log.Printf("WARNING: failed to create default DNS records for %s: %v", d.Name, err)
 		} else {
-			provisionDNSZone(h.DNSSvc, h.AgentClient, d.ID, d.Name)
+			provisionDNSZone(h.DNSSvc, h.DomainSvc, h.AgentClient, d.ID, d.Name)
 		}
 	}
 
@@ -440,12 +440,12 @@ func (h *DomainHandler) toggleSeparateDNS(d *domain.Domain, separateDNS bool) {
 	if separateDNS {
 		// Turning ON: remove A from parent zone, create own zone
 		_ = h.DNSSvc.DeleteByName(parent.ID, subPrefix)
-		provisionDNSZone(h.DNSSvc, h.AgentClient, parent.ID, parent.Name)
+		provisionDNSZone(h.DNSSvc, h.DomainSvc, h.AgentClient, parent.ID, parent.Name)
 
 		if err := h.DNSSvc.CreateDefaultRecords(d.ID, d.Name, serverIP, serverIPv6); err != nil {
 			log.Printf("WARNING: failed to create DNS zone for subdomain %s: %v", d.Name, err)
 		} else {
-			provisionDNSZone(h.DNSSvc, h.AgentClient, d.ID, d.Name)
+			provisionDNSZone(h.DNSSvc, h.DomainSvc, h.AgentClient, d.ID, d.Name)
 		}
 	} else {
 		// Turning OFF: remove subdomain zone, add A/AAAA back to parent
@@ -466,7 +466,7 @@ func (h *DomainHandler) toggleSeparateDNS(d *domain.Domain, separateDNS bool) {
 			}
 		}
 		// Regenerate parent zone with the new subdomain records
-		provisionDNSZone(h.DNSSvc, h.AgentClient, parent.ID, parent.Name)
+		provisionDNSZone(h.DNSSvc, h.DomainSvc, h.AgentClient, parent.ID, parent.Name)
 	}
 
 	h.DomainSvc.UpdateSeparateDNS(d.ID, separateDNS)
@@ -681,7 +681,7 @@ func (h *DomainHandler) Delete(c *fiber.Ctx) error {
 		if err == nil {
 			subPrefix := extractSubPrefix(d.Name, parent.Name)
 			_ = h.DNSSvc.DeleteByName(parent.ID, subPrefix)
-			provisionDNSZone(h.DNSSvc, h.AgentClient, parent.ID, parent.Name)
+			provisionDNSZone(h.DNSSvc, h.DomainSvc, h.AgentClient, parent.ID, parent.Name)
 		}
 	}
 
@@ -949,26 +949,11 @@ func (h *DomainHandler) writeVhost(d *domain.Domain) error {
 
 // provisionDNSZone generates a BIND zone file from DNS records and registers
 // it in named.conf.local. All errors are logged but non-fatal.
-func provisionDNSZone(dnsSvc *dns.Service, agentClient *agent.Client, domainID int64, domainName string) {
-	records, err := dnsSvc.ListByDomain(domainID)
+func provisionDNSZone(dnsSvc *dns.Service, domainSvc *domain.Service, agentClient *agent.Client, domainID int64, domainName string) {
+	zoneRecords, err := buildZoneRecords(dnsSvc, domainSvc, domainID, domainName)
 	if err != nil {
-		log.Printf("WARNING: failed to list DNS records for zone provisioning of %s: %v", domainName, err)
+		log.Printf("WARNING: failed to build zone records for %s: %v", domainName, err)
 		return
-	}
-
-	zoneRecords := make([]tmpl.ZoneRecord, 0, len(records))
-	for _, r := range records {
-		zr := tmpl.ZoneRecord{
-			Name:  r.Name,
-			TTL:   r.TTL,
-			Class: "IN",
-			Type:  r.Type,
-			Value: r.Value,
-		}
-		if r.Priority != nil {
-			zr.Priority = *r.Priority
-		}
-		zoneRecords = append(zoneRecords, zr)
 	}
 
 	zoneContent, err := tmpl.RenderZoneFile(tmpl.ZoneFileData{

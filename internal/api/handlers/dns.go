@@ -393,24 +393,16 @@ func (h *DNSHandler) ResetDefaults(c *fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
-// regenerateZone rebuilds the BIND9 zone file for a domain and pushes it
-// to the server via the agent. Returns a warning string if zone regeneration
-// failed (empty on success). Errors are also logged.
-func regenerateZone(h *DNSHandler, domainID int64, domainName string) string {
-	// Serialize concurrent zone updates for the same domain
-	mu := getZoneMutex(domainName)
-	mu.Lock()
-	defer mu.Unlock()
-
-	// 1. List all records for the domain
-	records, err := h.DNSSvc.ListByDomain(domainID)
+// buildZoneRecords converts DNS records to ZoneRecord slice and appends
+// A/AAAA records for subdomains with separate_dns=0. This ensures subdomain
+// records always appear in the parent zone regardless of whether they were
+// explicitly stored in dns_records.
+func buildZoneRecords(dnsSvc *dns.Service, domainSvc *domain.Service, domainID int64, domainName string) ([]tmpl.ZoneRecord, error) {
+	records, err := dnsSvc.ListByDomain(domainID)
 	if err != nil {
-		msg := fmt.Sprintf("failed to list DNS records for zone regeneration of %s: %v", domainName, err)
-		log.Printf("WARNING: %s", msg)
-		return msg
+		return nil, fmt.Errorf("listing dns records: %w", err)
 	}
 
-	// 2. Convert to ZoneRecord slice
 	zoneRecords := make([]tmpl.ZoneRecord, 0, len(records))
 	for _, r := range records {
 		zr := tmpl.ZoneRecord{
@@ -420,16 +412,75 @@ func regenerateZone(h *DNSHandler, domainID int64, domainName string) string {
 			Type:  r.Type,
 			Value: r.Value,
 		}
-
-		// Handle MX/SRV priority
 		if r.Priority != nil {
 			zr.Priority = *r.Priority
 		}
-
 		zoneRecords = append(zoneRecords, zr)
 	}
 
-	// 3. Render zone file
+	// Add A/AAAA records for subdomains with separate_dns=0.
+	// These subdomains resolve via the parent zone, so we must include their
+	// records even if they weren't explicitly inserted into dns_records.
+	if domainSvc != nil {
+		children, err := domainSvc.GetChildren(domainID)
+		if err == nil {
+			serverIP := getServerIP()
+			serverIPv6 := getServerIPv6()
+			// Build a set of existing names+types to avoid duplicates
+			existing := make(map[string]bool)
+			for _, zr := range zoneRecords {
+				existing[zr.Name+"/"+zr.Type] = true
+			}
+			for _, child := range children {
+				if child.SeparateDNS {
+					continue
+				}
+				prefix := extractSubPrefix(child.Name, domainName)
+				if prefix == "" || prefix == child.Name {
+					continue
+				}
+				if !existing[prefix+"/A"] {
+					zoneRecords = append(zoneRecords, tmpl.ZoneRecord{
+						Name:  prefix,
+						TTL:   3600,
+						Class: "IN",
+						Type:  "A",
+						Value: serverIP,
+					})
+				}
+				if serverIPv6 != "" && !existing[prefix+"/AAAA"] {
+					zoneRecords = append(zoneRecords, tmpl.ZoneRecord{
+						Name:  prefix,
+						TTL:   3600,
+						Class: "IN",
+						Type:  "AAAA",
+						Value: serverIPv6,
+					})
+				}
+			}
+		}
+	}
+
+	return zoneRecords, nil
+}
+
+// regenerateZone rebuilds the BIND9 zone file for a domain and pushes it
+// to the server via the agent. Returns a warning string if zone regeneration
+// failed (empty on success). Errors are also logged.
+func regenerateZone(h *DNSHandler, domainID int64, domainName string) string {
+	// Serialize concurrent zone updates for the same domain
+	mu := getZoneMutex(domainName)
+	mu.Lock()
+	defer mu.Unlock()
+
+	zoneRecords, err := buildZoneRecords(h.DNSSvc, h.DomainSvc, domainID, domainName)
+	if err != nil {
+		msg := fmt.Sprintf("failed to build zone records for %s: %v", domainName, err)
+		log.Printf("WARNING: %s", msg)
+		return msg
+	}
+
+	// Render zone file
 	zoneContent, err := tmpl.RenderZoneFile(tmpl.ZoneFileData{
 		Domain:  domainName,
 		Records: zoneRecords,

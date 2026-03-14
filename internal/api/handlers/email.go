@@ -1295,25 +1295,10 @@ func (h *EmailHandler) syncVirtualMaps() {
 
 // regenerateZone triggers a DNS zone regeneration via the agent.
 func (h *EmailHandler) regenerateZone(domainID int64, domainName string) {
-	records, err := h.DNSSvc.ListByDomain(domainID)
+	zoneRecords, err := buildZoneRecords(h.DNSSvc, h.DomainSvc, domainID, domainName)
 	if err != nil {
-		log.Error().Err(err).Str("domain", domainName).Msg("failed to list DNS records for zone regeneration")
+		log.Error().Err(err).Str("domain", domainName).Msg("failed to build zone records")
 		return
-	}
-
-	zoneRecords := make([]tmpl.ZoneRecord, 0, len(records))
-	for _, r := range records {
-		zr := tmpl.ZoneRecord{
-			Name:  r.Name,
-			TTL:   r.TTL,
-			Class: "IN",
-			Type:  r.Type,
-			Value: r.Value,
-		}
-		if r.Priority != nil {
-			zr.Priority = *r.Priority
-		}
-		zoneRecords = append(zoneRecords, zr)
 	}
 
 	zoneContent, err := tmpl.RenderZoneFile(tmpl.ZoneFileData{
