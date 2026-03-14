@@ -45,7 +45,7 @@ version_to_num() {
 
 # Returns true if $1 < $2
 version_lt() {
-    [[ $(version_to_num "$1") -lt $(version_to_num "$2") ]]
+    [[ 10#$(version_to_num "$1") -lt 10#$(version_to_num "$2") ]]
 }
 
 get_current_version() {
