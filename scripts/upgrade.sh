@@ -898,10 +898,16 @@ RCOPTS
         fi
     fi
 
-    # Deploy signon.php — reads one-time token, auto-submits login form
+    # Deploy signon.php — server-side login via cURL (handles CSRF token)
     if [[ -d /usr/share/roundcube ]]; then
         cat > /usr/share/roundcube/signon.php <<'RCSIGNON'
 <?php
+// PinkPanel Roundcube SSO — server-side cURL login
+// 1. Reads one-time token from disk
+// 2. GETs Roundcube login page to obtain session cookie + CSRF token
+// 3. POSTs login with credentials + CSRF token
+// 4. Forwards authenticated session cookie to browser and redirects
+
 $token = isset($_GET['token']) ? preg_replace('/[^a-f0-9]/', '', $_GET['token']) : '';
 if (!$token) { die('Missing token'); }
 
@@ -913,20 +919,85 @@ $data = json_decode(file_get_contents($tokenFile), true);
 
 if (!$data || empty($data['username']) || empty($data['password'])) { die('Invalid token data'); }
 
-$user = htmlspecialchars($data['username'], ENT_QUOTES, 'UTF-8');
-$pass = htmlspecialchars($data['password'], ENT_QUOTES, 'UTF-8');
-?><!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Signing in...</title></head>
-<body><p>Signing in to webmail...</p>
-<form id="rclogin" method="post" action="/roundcube/">
-  <input type="hidden" name="_task" value="login">
-  <input type="hidden" name="_action" value="login">
-  <input type="hidden" name="_user" value="<?php echo $user; ?>">
-  <input type="hidden" name="_pass" value="<?php echo $pass; ?>">
-  <input type="hidden" name="_timezone" value="UTC">
-</form>
-<script>document.getElementById('rclogin').submit();</script>
-</body></html>
+$rcBase = 'http://127.0.0.1/roundcube/';
+$cookieJar = tempnam(sys_get_temp_dir(), 'rc_');
+
+// Step 1: GET login page to obtain session cookie and CSRF token
+$ch = curl_init();
+curl_setopt_array($ch, [
+    CURLOPT_URL            => $rcBase . '?_task=login',
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_COOKIEJAR      => $cookieJar,
+    CURLOPT_COOKIEFILE     => $cookieJar,
+    CURLOPT_FOLLOWLOCATION => true,
+    CURLOPT_TIMEOUT        => 10,
+    CURLOPT_HTTPHEADER     => ['Host: ' . $_SERVER['HTTP_HOST']],
+]);
+$loginPage = curl_exec($ch);
+$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
+
+if (!$loginPage || $httpCode !== 200) {
+    @unlink($cookieJar);
+    die('Failed to load Roundcube login page');
+}
+
+// Extract CSRF token from the login form
+if (!preg_match('/name="_token"\s+value="([^"]+)"/', $loginPage, $m)) {
+    @unlink($cookieJar);
+    die('Could not extract CSRF token from Roundcube');
+}
+$csrfToken = $m[1];
+
+// Step 2: POST login with credentials + CSRF token
+$ch = curl_init();
+curl_setopt_array($ch, [
+    CURLOPT_URL            => $rcBase . '?_task=login&_action=login',
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_POST           => true,
+    CURLOPT_POSTFIELDS     => http_build_query([
+        '_task'     => 'login',
+        '_action'   => 'login',
+        '_timezone' => 'UTC',
+        '_token'    => $csrfToken,
+        '_user'     => $data['username'],
+        '_pass'     => $data['password'],
+    ]),
+    CURLOPT_COOKIEJAR      => $cookieJar,
+    CURLOPT_COOKIEFILE     => $cookieJar,
+    CURLOPT_FOLLOWLOCATION => false,
+    CURLOPT_HEADER         => true,
+    CURLOPT_TIMEOUT        => 10,
+    CURLOPT_HTTPHEADER     => ['Host: ' . $_SERVER['HTTP_HOST']],
+]);
+$response = curl_exec($ch);
+curl_close($ch);
+
+// Extract the authenticated session cookie from the cookie jar
+$sessionCookie = '';
+if (file_exists($cookieJar)) {
+    $lines = file($cookieJar, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    foreach ($lines as $line) {
+        if ($line[0] === '#') continue;
+        $parts = explode("\t", $line);
+        if (count($parts) >= 7 && stripos($parts[5], 'sessid') !== false) {
+            $sessionCookie = $parts[5] . '=' . $parts[6];
+            setcookie($parts[5], $parts[6], 0, '/roundcube/', '', true, true);
+        }
+        if (count($parts) >= 7 && stripos($parts[5], 'sessauth') !== false) {
+            setcookie($parts[5], $parts[6], 0, '/roundcube/', '', true, true);
+        }
+    }
+}
+@unlink($cookieJar);
+
+if (!$sessionCookie) {
+    die('Roundcube login failed — check email credentials. You may need to change the password in the panel first.');
+}
+
+// Step 3: Redirect to authenticated Roundcube session
+header('Location: /roundcube/');
+exit;
 RCSIGNON
         chown www-data:www-data /usr/share/roundcube/signon.php
         # Symlink into public docroot (nginx may serve from /var/lib/roundcube/public_html/)
