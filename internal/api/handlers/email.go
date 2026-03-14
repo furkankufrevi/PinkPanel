@@ -1071,6 +1071,13 @@ func (h *EmailHandler) setupMailVhost(mailDomain, documentRoot string) {
 		log.Error().Err(err).Msg("failed to reload nginx after mail SSL")
 	}
 
+	// Step 4: Configure Postfix & Dovecot to use the mail certificate
+	if _, err := h.AgentClient.Call("email_configure_ssl", map[string]any{
+		"domain": mailDomain,
+	}); err != nil {
+		log.Error().Err(err).Str("domain", mailDomain).Msg("failed to configure Postfix/Dovecot SSL")
+	}
+
 	log.Info().Str("domain", mailDomain).Msg("mail vhost with SSL created successfully")
 }
 
@@ -1160,7 +1167,7 @@ func (h *EmailHandler) ConfigureMailSSL(c *fiber.Ctx) error {
 	}
 
 	resp, err := h.AgentClient.Call("email_configure_ssl", map[string]any{
-		"domain": dom.Name,
+		"domain": "mail." + dom.Name,
 	})
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": fiber.Map{"code": "ssl_error", "message": err.Error()}})

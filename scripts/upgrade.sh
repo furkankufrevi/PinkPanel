@@ -846,13 +846,40 @@ DSIEVE
     mkdir -p /var/www/autoconfig /var/www/autodiscover
     chown -R www-data:www-data /var/www/autoconfig /var/www/autodiscover 2>/dev/null || true
 
-    # Enable services
+    # Ensure ClamAV has virus definitions before starting daemon
+    if command -v freshclam &>/dev/null; then
+        systemctl stop clamav-freshclam > /dev/null 2>&1 || true
+        if [[ ! -f /var/lib/clamav/main.cvd ]] && [[ ! -f /var/lib/clamav/main.cld ]]; then
+            log "Downloading ClamAV virus definitions (first run)..."
+            freshclam --quiet 2>/dev/null || true
+        fi
+    fi
+
+    # Enable services in correct order (freshclam → clamd → milter)
     systemctl enable --now clamav-freshclam > /dev/null 2>&1 || true
     systemctl enable --now clamav-daemon > /dev/null 2>&1 || true
+    # Wait briefly for clamd socket to appear before starting milter
+    local retries=0
+    while [[ ! -S /run/clamav/clamd.ctl ]] && (( retries < 10 )); do
+        sleep 1
+        (( retries++ ))
+    done
+    systemctl enable --now clamav-milter > /dev/null 2>&1 || true
     systemctl enable --now spamassassin > /dev/null 2>&1 || true
     systemctl enable --now spamass-milter > /dev/null 2>&1 || true
-    systemctl enable --now clamav-milter > /dev/null 2>&1 || true
     systemctl reload dovecot > /dev/null 2>&1 || true
+
+    # Verify key services
+    if systemctl is-active --quiet clamav-daemon; then
+        log "ClamAV daemon running"
+    else
+        warn "ClamAV daemon not running — virus scanning will be bypassed"
+    fi
+    if systemctl is-active --quiet spamassassin; then
+        log "SpamAssassin running"
+    else
+        warn "SpamAssassin not running — spam filtering will be bypassed"
+    fi
 
     log "Spam & antivirus ready"
 }
